@@ -26,13 +26,37 @@
 int tun_addr = 2;
 
 struct ipo_priv {
-	atomic64_t		dropped;
+	atomic64_t dropped;
 };
 
 struct pcpu_dstats {
 	u64			tx_packets;
 	u64			tx_bytes;
 	struct u64_stats_sync	syncp;
+};
+
+static void ipo_get_drvinfo(struct net_device *dev,
+							  struct ethtool_drvinfo *info)
+{
+	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
+}
+
+static int ipo_get_ts_info(struct net_device *dev,
+							 struct ethtool_ts_info *ts_info)
+{
+	ts_info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
+							   SOF_TIMESTAMPING_RX_SOFTWARE |
+							   SOF_TIMESTAMPING_SOFTWARE;
+
+	ts_info->phc_index = -1;
+
+	return 0;
+};
+
+static const struct ethtool_ops ipo_ethtool_ops = {
+	.get_drvinfo = ipo_get_drvinfo,
+	.get_ts_info = ipo_get_ts_info,
 };
 
 static int ipo_dev_init(struct net_device *dev)
@@ -172,7 +196,7 @@ static void ipo_setup(struct net_device *dev)
 	dev->priv_flags |= IFF_PHONY_HEADROOM;
 
 	dev->netdev_ops = &ipo_netdev_ops;
-//	dev->ethtool_ops = &veth_ethtool_ops;
+	dev->ethtool_ops = &ipo_ethtool_ops;
 	dev->features |= NETIF_F_LLTX;
 //	dev->features |= VETH_FEATURES;
 	dev->vlan_features = dev->features &
