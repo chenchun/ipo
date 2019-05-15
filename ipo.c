@@ -68,6 +68,7 @@ static rx_handler_result_t ipo_rx(struct sk_buff **pskb)
 	struct iphdr *nh;
 	nh = (struct iphdr *)skb_network_header(skb);
 	printk(KERN_INFO "IPO ipo_rx saddr %d, daddr %d\n", nh->saddr, nh->daddr);
+	printiphdr("IPO ipo_rx: ", (char *) skb_network_header(skb), 24);
 	return RX_HANDLER_PASS;
 }
 
@@ -81,7 +82,6 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	dstats->tx_bytes += skb->len;
 	u64_stats_update_end(&dstats->syncp);
 	nh = (struct iphdr *)skb_network_header(skb);
-	printk(KERN_INFO "IPO ipo_xmit saddr %d, daddr %d\n", nh->saddr, nh->daddr);
 	printiphdr("IPO ipo_xmit: ", (char *) skb_network_header(skb), 24);
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
@@ -173,7 +173,9 @@ static int __init ipo_init_one(void)
 	err = register_netdevice(dev_ipo);
 	if (err < 0)
 		goto err;
-	netdev_rx_handler_register(dev_ipo, ipo_rx, NULL);
+	err = netdev_rx_handler_register(dev_ipo, ipo_rx, NULL);
+	if (err < 0)
+		goto err;
 	return 0;
 
 	err:
