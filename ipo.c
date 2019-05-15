@@ -7,13 +7,29 @@
 #include <linux/u64_stats_sync.h>
 #include <linux/etherdevice.h>
 #include <linux/percpu-defs.h>
+#include <linux/if_ether.h>
+#include <linux/skbuff.h>
 
 #include <net/rtnetlink.h>
 #include <net/dst.h>
 #include <net/xfrm.h>
 
+// ip option header
+struct opthdr {
+	uint8_t type;
+	uint8_t len;
+};
+
+struct optdata {
+	char src;
+	char dst;
+};
+
 void printiphdr(const char *pre, char *p, uint32_t len) {
 	uint32_t i;
+	if (len > 1500) {
+		len = 1500;
+	}
 	printk(KERN_INFO);
 	printk(pre);
 	for (i = 0; i < len; i++) {
@@ -74,7 +90,13 @@ static rx_handler_result_t ipo_rx(struct sk_buff **pskb)
 
 static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 {
+	int i, copied;
 	struct iphdr *nh;
+	struct ethhdr *eh;
+	char *start, *p;
+	struct opthdr *opthdr;
+	struct optdata *optdata;
+	int overhead = sizeof(struct opthdr) + sizeof(struct optdata);
 	struct pcpu_dstats *dstats = this_cpu_ptr(dev->dstats);
 
 	u64_stats_update_begin(&dstats->syncp);
@@ -82,7 +104,43 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	dstats->tx_bytes += skb->len;
 	u64_stats_update_end(&dstats->syncp);
 	nh = (struct iphdr *)skb_network_header(skb);
-	printiphdr("IPO ipo_xmit: ", (char *) skb_network_header(skb), 24);
+	printiphdr("IPO ipo_xmit ori: ", skb_network_header(skb), ntohs(nh->tot_len));
+	if (nh->ihl == 5) {
+		// copy headers ahead
+		if (skb_mac_header_was_set(skb)) {
+			eh = eth_hdr(skb);
+			printiphdr("IPO ipo_xmit smac: ", eh->h_source, 6);
+			printiphdr("IPO ipo_xmit dmac: ", eh->h_dest, 6);
+			p = skb_mac_header(skb);
+			start = p - overhead;
+			copied = sizeof(struct iphdr) + sizeof(struct ethhdr);
+		} else {
+			p = skb_network_header(skb);
+			start = p - overhead;
+			copied = sizeof(struct iphdr);
+		}
+		for (i = 0; i < copied; i++) {
+			*start++ = *p++;
+		}
+		skb_set_mac_header(skb, -overhead);
+		skb_set_network_header(skb, -overhead);
+		nh = (struct iphdr *)skb_network_header(skb);
+		nh->ihl += overhead/4;
+		nh->tot_len = htons(ntohs(nh->tot_len) + overhead);
+
+		start = skb_network_header(skb);
+		opthdr = (struct opthdr *)p;
+		opthdr->type = 40;
+		opthdr->len = sizeof(struct opthdr) + sizeof(struct optdata);
+		optdata = (struct optdata *)(p + sizeof(struct opthdr));
+		// save last byte of src ip to opt src
+		optdata->src = start[15];
+		optdata->dst = start[19];
+		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
+	} else {
+		// TODO
+	}
+
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
