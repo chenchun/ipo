@@ -87,6 +87,16 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	return NETDEV_TX_OK;
 }
 
+static int ipo_newlink(struct net *net, struct net_device *dev,
+					   struct nlattr *tb[], struct nlattr *data[])
+{
+	int err;
+	err = netdev_rx_handler_register(dev, ipo_rx, NULL);
+	if (err < 0)
+		return err;
+	return register_netdevice(dev);
+}
+
 static int ipo_dev_init(struct net_device *dev)
 {
 	dev->dstats = alloc_percpu(struct pcpu_dstats);
@@ -154,6 +164,7 @@ static struct rtnl_link_ops ipo_link_ops __read_mostly = {
 	.kind		= "ipo",
 	.setup		= ipo_setup,
 	.validate	= ipo_validate,
+	.newlink	= ipo_newlink,
 };
 
 /* Number of ipo devices to be set up by this module. */
@@ -171,9 +182,6 @@ static int __init ipo_init_one(void)
 
 	dev_ipo->rtnl_link_ops = &ipo_link_ops;
 	err = register_netdevice(dev_ipo);
-	if (err < 0)
-		goto err;
-	err = netdev_rx_handler_register(dev_ipo, ipo_rx, NULL);
 	if (err < 0)
 		goto err;
 	return 0;
