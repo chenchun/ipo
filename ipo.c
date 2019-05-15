@@ -12,6 +12,21 @@
 #include <net/dst.h>
 #include <net/xfrm.h>
 
+void printiphdr(const char *pre, char *p, uint32_t len) {
+	uint32_t i;
+	printk(KERN_INFO);
+	printk(pre);
+	for (i = 0; i < len; i++) {
+		if (i == 12 || i == 20) {
+			printk("  ");
+		}
+		printk("%02hhx ", *p);
+		p++;
+	}
+	printk("\n");
+}
+
+
 static int numipos = 1;
 
 /* fake multicast ability */
@@ -50,21 +65,24 @@ static void ipo_get_stats64(struct net_device *dev,
 static rx_handler_result_t ipo_rx(struct sk_buff **pskb)
 {
 	struct sk_buff *skb = *pskb;
-	struct iphdr *nh = (struct iphdr *)skb_network_header(skb);
+	struct iphdr *nh;
+	nh = (struct iphdr *)skb_network_header(skb);
 	printk(KERN_INFO "IPO ipo_rx saddr %d, daddr %d\n", nh->saddr, nh->daddr);
 	return RX_HANDLER_PASS;
 }
 
 static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 {
+	struct iphdr *nh;
 	struct pcpu_dstats *dstats = this_cpu_ptr(dev->dstats);
 
 	u64_stats_update_begin(&dstats->syncp);
 	dstats->tx_packets++;
 	dstats->tx_bytes += skb->len;
 	u64_stats_update_end(&dstats->syncp);
-	struct iphdr *nh = (struct iphdr *)skb_network_header(skb);
+	nh = (struct iphdr *)skb_network_header(skb);
 	printk(KERN_INFO "IPO ipo_xmit saddr %d, daddr %d\n", nh->saddr, nh->daddr);
+	printiphdr("IPO ipo_xmit: ", (char *) skb_network_header(skb), 24);
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
