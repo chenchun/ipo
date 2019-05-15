@@ -87,7 +87,18 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	skb_tx_timestamp(skb);
 	dev_kfree_skb(skb);
+	struct iphdr *nh = (struct iphdr *)skb_network_header(skb);
+	printk(KERN_INFO "IPO ipo_xmit saddr %d, daddr %s\n", nh->saddr, nh->daddr);
 	return NETDEV_TX_OK;
+}
+
+// Check include/linux/netdevice.h for enum rx_handler_result
+static rx_handler_result_t ipo_rx(struct sk_buff **pskb)
+{
+	struct sk_buff *skb = *pskb;
+	struct iphdr *nh = (struct iphdr *)skb_network_header(skb);
+	printk(KERN_INFO "IPO ipo_rx saddr %d, daddr %s\n", nh->saddr, nh->daddr);
+	return RX_HANDLER_PASS;
 }
 
 /* fake multicast ability */
@@ -204,13 +215,14 @@ static void ipo_setup(struct net_device *dev)
 						   NETIF_F_HW_VLAN_STAG_TX |
 						   NETIF_F_HW_VLAN_CTAG_RX |
 						   NETIF_F_HW_VLAN_STAG_RX);
-	dev->needs_free_netdev = true;
-	dev->priv_destructor = ipo_dev_free;
-	dev->max_mtu = ETH_MAX_MTU;
+//	dev->needs_free_netdev = true;
+//	dev->priv_destructor = ipo_dev_free;
+//	dev->max_mtu = ETH_MAX_MTU;
 
 //	dev->hw_features = VETH_FEATURES;
 //	dev->hw_enc_features = VETH_FEATURES;
 	dev->mpls_features = NETIF_F_HW_CSUM | NETIF_F_GSO_SOFTWARE;
+	netdev_rx_handler_register(dev, ipo_rx, NULL);
 }
 
 static struct net *ipo_get_link_net(const struct net_device *dev)
