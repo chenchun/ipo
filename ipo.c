@@ -46,6 +46,15 @@ static void ipo_get_stats64(struct net_device *dev,
 	}
 }
 
+// Check include/linux/netdevice.h for enum rx_handler_result
+static rx_handler_result_t ipo_rx(struct sk_buff **pskb)
+{
+	struct sk_buff *skb = *pskb;
+	struct iphdr *nh = (struct iphdr *)skb_network_header(skb);
+	printk(KERN_INFO "IPO ipo_rx saddr %d, daddr %d\n", nh->saddr, nh->daddr);
+	return RX_HANDLER_PASS;
+}
+
 static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct pcpu_dstats *dstats = this_cpu_ptr(dev->dstats);
@@ -54,7 +63,8 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	dstats->tx_packets++;
 	dstats->tx_bytes += skb->len;
 	u64_stats_update_end(&dstats->syncp);
-
+	struct iphdr *nh = (struct iphdr *)skb_network_header(skb);
+	printk(KERN_INFO "IPO ipo_xmit saddr %d, daddr %d\n", nh->saddr, nh->daddr);
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
@@ -145,6 +155,7 @@ static int __init ipo_init_one(void)
 	err = register_netdevice(dev_ipo);
 	if (err < 0)
 		goto err;
+	netdev_rx_handler_register(dev_ipo, ipo_rx, NULL);
 	return 0;
 
 	err:
