@@ -110,20 +110,21 @@ static rx_handler_result_t ipo_rx(struct sk_buff **pskb)
 static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	int i, copied;
+	int err;
+	struct ethhdr *eth;
 	struct iphdr *nh;
 	char *start, *p;
 	struct opthdr *opthdr;
 	struct optdata *optdata;
 	struct pcpu_dstats *dstats = this_cpu_ptr(dev->dstats);
 
-	u64_stats_update_begin(&dstats->syncp);
-	dstats->tx_packets++;
-	dstats->tx_bytes += skb->len;
-	u64_stats_update_end(&dstats->syncp);
+	eth = eth_hdr(skb);
+	if (ntohs(eth->h_proto) != ETH_P_IP) {
+		goto xmit_done;
+	}
 	nh = (struct iphdr *)skb_network_header(skb);
 	if (unlikely(skb_headroom(skb) < overhead)) {
-		// TODO
-		return NET_XMIT_DROP;
+		goto xmit_done;
 	}
 	if (nh->ihl == 5) {
 		printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
@@ -158,16 +159,29 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		opthdr->len = overhead;
 		optdata = (struct optdata *)((char *)opthdr + sizeof(struct opthdr));
 		// save last byte of src ip to opt src
-		optdata->src = start[15];
+//		optdata->src = start[15];
 		optdata->dst = start[19];
-		//TODO src ip and dst ip
+		//TODO remove following lines and replace them with src ip and dst ip
+		start = skb_network_header(skb);
+		start[14] = 2;
+		start[18] = 2;
 		//TODO checksum ?
 		printmachdr("IPO ipo_xmit mac new: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 //		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len) );
+		err = ip_local_out(skb);
+		if (likely(net_xmit_eval(err) == 0)) {
+			goto xmit_done;
+		} else {
+			
+		}
 	} else {
 		// TODO
 	}
-
+xmit_done:
+	u64_stats_update_begin(&dstats->syncp);
+	dstats->tx_packets++;
+	dstats->tx_bytes += skb->len;
+	u64_stats_update_end(&dstats->syncp);
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
