@@ -25,10 +25,29 @@ struct optdata {
 	char dst;
 };
 
+const unsigned short overhead = sizeof(struct opthdr) + sizeof(struct optdata);
+
+void printmachdr(const char *pre, char *p, uint32_t len) {
+	uint32_t i;
+	if (len > 100) {
+		len = 100;
+	}
+	printk(KERN_INFO);
+	printk(pre);
+	for (i = 0; i < len; i++) {
+		if (i == 26 || i == 34 || i == 14) {
+			printk("  ");
+		}
+		printk("%02hhx ", *p);
+		p++;
+	}
+	printk("\n");
+}
+
 void printiphdr(const char *pre, char *p, uint32_t len) {
 	uint32_t i;
-	if (len > 1500) {
-		len = 1500;
+	if (len > 100) {
+		len = 100;
 	}
 	printk(KERN_INFO);
 	printk(pre);
@@ -92,11 +111,9 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	int i, copied;
 	struct iphdr *nh;
-	struct ethhdr *eh;
 	char *start, *p;
 	struct opthdr *opthdr;
 	struct optdata *optdata;
-	int overhead = sizeof(struct opthdr) + sizeof(struct optdata);
 	struct pcpu_dstats *dstats = this_cpu_ptr(dev->dstats);
 
 	u64_stats_update_begin(&dstats->syncp);
@@ -104,39 +121,49 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	dstats->tx_bytes += skb->len;
 	u64_stats_update_end(&dstats->syncp);
 	nh = (struct iphdr *)skb_network_header(skb);
-	printiphdr("IPO ipo_xmit ori: ", skb_network_header(skb), ntohs(nh->tot_len));
+	if (unlikely(skb_headroom(skb) < overhead)) {
+		// TODO
+		return NET_XMIT_DROP;
+	}
 	if (nh->ihl == 5) {
+		printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
+//		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 		// copy headers ahead
 		if (skb_mac_header_was_set(skb)) {
-			eh = eth_hdr(skb);
-			printiphdr("IPO ipo_xmit smac: ", eh->h_source, 6);
-			printiphdr("IPO ipo_xmit dmac: ", eh->h_dest, 6);
+//			printk(KERN_INFO "mac set\n");
 			p = skb_mac_header(skb);
 			start = p - overhead;
 			copied = sizeof(struct iphdr) + sizeof(struct ethhdr);
+			skb_set_mac_header(skb, skb_mac_offset(skb)-overhead);
 		} else {
 			p = skb_network_header(skb);
 			start = p - overhead;
 			copied = sizeof(struct iphdr);
 		}
+		skb_set_network_header(skb, skb_network_offset(skb)-overhead);
+		skb_push(skb, overhead);
+//		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+//		printk(KERN_INFO "start %p, p %p, copied %d\n", start, p, copied);
 		for (i = 0; i < copied; i++) {
 			*start++ = *p++;
 		}
-		skb_set_mac_header(skb, -overhead);
-		skb_set_network_header(skb, -overhead);
 		nh = (struct iphdr *)skb_network_header(skb);
+//		printmachdr("IPO ipo_xmit mac int: ", skb_mac_header(skb), 60);
 		nh->ihl += overhead/4;
 		nh->tot_len = htons(ntohs(nh->tot_len) + overhead);
 
 		start = skb_network_header(skb);
-		opthdr = (struct opthdr *)p;
+		opthdr = (struct opthdr *)(start + sizeof(struct iphdr));
 		opthdr->type = 40;
-		opthdr->len = sizeof(struct opthdr) + sizeof(struct optdata);
-		optdata = (struct optdata *)(p + sizeof(struct opthdr));
+		opthdr->len = overhead;
+		optdata = (struct optdata *)((char *)opthdr + sizeof(struct opthdr));
 		// save last byte of src ip to opt src
 		optdata->src = start[15];
 		optdata->dst = start[19];
-		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
+		//TODO src ip and dst ip
+		//TODO checksum ?
+		printmachdr("IPO ipo_xmit mac new: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
+//		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len) );
 	} else {
 		// TODO
 	}
@@ -160,7 +187,9 @@ static int ipo_dev_init(struct net_device *dev)
 	dev->dstats = alloc_percpu(struct pcpu_dstats);
 	if (!dev->dstats)
 		return -ENOMEM;
-
+	// preserve headroom for option fields.
+	// It seems needed_headroom multiples by 4
+	dev->needed_headroom = overhead;
 	return 0;
 }
 
@@ -263,7 +292,7 @@ static int __init ipo_init_module(void)
 	if (err < 0)
 		__rtnl_link_unregister(&ipo_link_ops);
 	rtnl_unlock();
-	printk(KERN_INFO "IPO installed\n");
+	printk(KERN_INFO "IPO installed overhead %d\n", overhead);
 	return err;
 }
 
