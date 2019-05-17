@@ -9,7 +9,9 @@
 #include <linux/percpu-defs.h>
 #include <linux/if_ether.h>
 #include <linux/skbuff.h>
+#include <linux/if_tunnel.h>
 
+#include <net/ip_tunnels.h>
 #include <net/rtnetlink.h>
 #include <net/dst.h>
 #include <net/xfrm.h>
@@ -23,6 +25,10 @@ struct opthdr {
 struct optdata {
 	char src;
 	char dst;
+};
+
+struct ipo_dev {
+	struct ip_tunnel_parm parms;
 };
 
 const unsigned short overhead = sizeof(struct opthdr) + sizeof(struct optdata);
@@ -61,6 +67,21 @@ void printiphdr(const char *pre, char *p, uint32_t len) {
 	printk("\n");
 }
 
+static inline struct rtable *ip_route_output_ipo(struct net *net,
+													struct flowi4 *fl4,
+													int proto,
+													__be32 daddr, __be32 saddr,
+													__be32 key, __u8 tos)
+{
+	memset(fl4, 0, sizeof(*fl4));
+//	fl4->flowi4_oif = oif;
+	fl4->daddr = daddr;
+	fl4->saddr = saddr;
+	fl4->flowi4_tos = tos;
+	fl4->flowi4_proto = proto;
+	fl4->fl4_gre_key = key;
+	return ip_route_output_key(net, fl4);
+}
 
 static int numipos = 1;
 
@@ -107,44 +128,62 @@ static rx_handler_result_t ipo_rx(struct sk_buff **pskb)
 	return RX_HANDLER_PASS;
 }
 
+static inline void iptunnel_xmit_ipo(struct sk_buff *skb, struct net_device *dev)
+{
+	int err;
+	int pkt_len = skb->len - skb_transport_offset(skb);
+	struct pcpu_dstats *dstats = this_cpu_ptr(dev->dstats);
+
+	nf_reset(skb);
+
+	err = ip_local_out(skb);
+	if (likely(net_xmit_eval(err) == 0)) {
+		u64_stats_update_begin(&dstats->syncp);
+		dstats->tx_bytes += pkt_len;
+		dstats->tx_packets++;
+		u64_stats_update_end(&dstats->syncp);
+	} else {
+		dev->stats.tx_errors++;
+		dev->stats.tx_aborted_errors++;
+	}
+}
+
 static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	int i, copied;
-	int err;
 	struct ethhdr *eth;
 	struct iphdr *nh;
 	char *start, *p;
 	struct opthdr *opthdr;
 	struct optdata *optdata;
-	struct pcpu_dstats *dstats = this_cpu_ptr(dev->dstats);
-	u64_stats_update_begin(&dstats->syncp);
-	dstats->tx_packets++;
-	dstats->tx_bytes += skb->len;
-	u64_stats_update_end(&dstats->syncp);
-	dev_kfree_skb(skb);
+	struct flowi4 fl4;
+	struct rtable *rt;		/* Route to the other host */
 	eth = eth_hdr(skb);
 	if (ntohs(eth->h_proto) != ETH_P_IP) {
-		return NETDEV_TX_OK;
+		goto tx_error;
 	}
 	nh = (struct iphdr *)skb_network_header(skb);
 	if (unlikely(skb_headroom(skb) < overhead)) {
-		return NETDEV_TX_OK;
+		printk(KERN_WARNING "IPO headroom %d too small\n", skb_headroom(skb));
+		goto tx_error;
 	}
-	printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
+//	printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 	if (nh->ihl == 5) {
-		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+		printiphdr("IPO ipo_xmit ori: ", skb_network_header(skb), ntohs(nh->tot_len));
+//		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 		// copy headers ahead
 		if (skb_mac_header_was_set(skb)) {
-//			printk(KERN_INFO "mac set\n");
-			p = skb_mac_header(skb);
-			start = p - overhead;
-			copied = sizeof(struct iphdr) + sizeof(struct ethhdr);
-			skb_set_mac_header(skb, skb_mac_offset(skb)-overhead);
-		} else {
-			p = skb_network_header(skb);
-			start = p - overhead;
-			copied = sizeof(struct iphdr);
+			printk(KERN_WARNING "IPO mac header was set %d\n", skb_headroom(skb));
+#ifdef NET_SKBUFF_DATA_USES_OFFSET
+			skb->mac_header = ~0U;
+#else
+			skb->mac_header = NULL;
+#endif
+			skb_pull(skb, sizeof(struct ethhdr));
 		}
+		p = skb_network_header(skb);
+		start = p - overhead;
+		copied = sizeof(struct iphdr);
 		skb_set_network_header(skb, skb_network_offset(skb)-overhead);
 		skb_push(skb, overhead);
 //		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
@@ -153,7 +192,6 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 			*start++ = *p++;
 		}
 		nh = (struct iphdr *)skb_network_header(skb);
-//		printmachdr("IPO ipo_xmit mac int: ", skb_mac_header(skb), 60);
 		nh->ihl += overhead/4;
 		nh->tot_len = htons(ntohs(nh->tot_len) + overhead);
 
@@ -167,23 +205,40 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		optdata->dst = start[19];
 		//TODO remove following lines and replace them with src ip and dst ip
 		start = skb_network_header(skb);
-		start[14] = 2;
 		start[18] = 2;
 		//TODO checksum ?
-		printmachdr("IPO ipo_xmit mac new: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
-//		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len) );
-//		err = ip_local_out(skb);
-//		if (likely(net_xmit_eval(err) == 0)) {
-//			return NETDEV_TX_OK;
-//		} else {
-//
-//		}
+//		printmachdr("IPO ipo_xmit mac new: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
+		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
+		rt = ip_route_output_ipo(dev_net(dev), &fl4,
+									nh->protocol,
+									nh->daddr, nh->saddr,
+									TUNNEL_NO_KEY,
+									RT_TOS(nh->tos)); //tunnel->parms.link
+		if (IS_ERR(rt)) {
+			dev->stats.tx_carrier_errors++;
+			printk(KERN_INFO "IPO route lookup error\n");
+			goto tx_error;
+		}
+		if (rt->dst.dev == dev) {
+			printk(KERN_WARNING "IPO circular route to %d\n", nh->daddr);
+			ip_rt_put(rt);
+			dev->stats.collisions++;
+			goto tx_error;
+		}
+//		printk(KERN_INFO "rt->dst.dev->name=%s\n", rt->dst.dev->name);
+		skb_dst_drop(skb);
+		skb_dst_set(skb, &rt->dst);
+		iptunnel_xmit_ipo(skb, dev);
 	} else {
 		// TODO
 	}
+	printk(KERN_INFO "IPO tx_ok\n");
 	return NETDEV_TX_OK;
-//xmit_done:
-//	return NETDEV_TX_OK;
+tx_error:
+	printk(KERN_WARNING "IPO tx_error\n");
+	dev->stats.tx_errors++;
+	dev_kfree_skb(skb);
+	return NETDEV_TX_OK;
 }
 
 static int ipo_newlink(struct net *net, struct net_device *dev,
@@ -242,6 +297,7 @@ static void ipo_setup(struct net_device *dev)
 
 	/* Fill in device structure with ethernet-generic values. */
 	dev->tx_queue_len = 0;
+	dev->type		= ARPHRD_NONE;
 	dev->flags |= IFF_NOARP;
 	dev->flags &= ~IFF_MULTICAST;
 	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
@@ -267,6 +323,7 @@ static struct rtnl_link_ops ipo_link_ops __read_mostly = {
 	.validate	= ipo_validate,
 	.newlink	= ipo_newlink,
 };
+//	.priv_size	= sizeof(struct ipo_dev),
 
 /* Number of ipo devices to be set up by this module. */
 module_param(numipos, int, 0);
