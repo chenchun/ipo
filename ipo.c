@@ -117,18 +117,22 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct opthdr *opthdr;
 	struct optdata *optdata;
 	struct pcpu_dstats *dstats = this_cpu_ptr(dev->dstats);
-
+	u64_stats_update_begin(&dstats->syncp);
+	dstats->tx_packets++;
+	dstats->tx_bytes += skb->len;
+	u64_stats_update_end(&dstats->syncp);
+	dev_kfree_skb(skb);
 	eth = eth_hdr(skb);
 	if (ntohs(eth->h_proto) != ETH_P_IP) {
-		goto xmit_done;
+		return NETDEV_TX_OK;
 	}
 	nh = (struct iphdr *)skb_network_header(skb);
 	if (unlikely(skb_headroom(skb) < overhead)) {
-		goto xmit_done;
+		return NETDEV_TX_OK;
 	}
+	printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 	if (nh->ihl == 5) {
-		printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
-//		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 		// copy headers ahead
 		if (skb_mac_header_was_set(skb)) {
 //			printk(KERN_INFO "mac set\n");
@@ -159,7 +163,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		opthdr->len = overhead;
 		optdata = (struct optdata *)((char *)opthdr + sizeof(struct opthdr));
 		// save last byte of src ip to opt src
-//		optdata->src = start[15];
+		optdata->src = start[15];
 		optdata->dst = start[19];
 		//TODO remove following lines and replace them with src ip and dst ip
 		start = skb_network_header(skb);
@@ -168,22 +172,18 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		//TODO checksum ?
 		printmachdr("IPO ipo_xmit mac new: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 //		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len) );
-		err = ip_local_out(skb);
-		if (likely(net_xmit_eval(err) == 0)) {
-			goto xmit_done;
-		} else {
-			
-		}
+//		err = ip_local_out(skb);
+//		if (likely(net_xmit_eval(err) == 0)) {
+//			return NETDEV_TX_OK;
+//		} else {
+//
+//		}
 	} else {
 		// TODO
 	}
-xmit_done:
-	u64_stats_update_begin(&dstats->syncp);
-	dstats->tx_packets++;
-	dstats->tx_bytes += skb->len;
-	u64_stats_update_end(&dstats->syncp);
-	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
+//xmit_done:
+//	return NETDEV_TX_OK;
 }
 
 static int ipo_newlink(struct net *net, struct net_device *dev,
