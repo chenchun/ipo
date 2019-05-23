@@ -154,17 +154,14 @@ static inline void iptunnel_xmit_ipo(struct sk_buff *skb, struct net_device *dev
 
 static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	int i, copied;
-	struct ethhdr *eth;
 	struct iphdr *nh;
-	char *start, *p;
+	char *charp;
 	struct opthdr *opthdr;
 	struct optdata *optdata;
 	struct flowi4 fl4;
 	struct rtable *rt;		/* Route to the other host */
 	__be32 dst;
-	eth = eth_hdr(skb);
-	if (ntohs(eth->h_proto) != ETH_P_IP) {
+	if (ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP) {
 		goto tx_error;
 	}
 	nh = (struct iphdr *)skb_network_header(skb);
@@ -185,37 +182,30 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		dst = rt->rt_gateway;
 		printiphdr("IPO ipo_xmit ori: ", skb_network_header(skb), ntohs(nh->tot_len));
 //		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
-		// copy headers ahead
 		if (skb_mac_header_was_set(skb)) {
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
-			skb->mac_header = ~0U;
+			skb->mac_header = ~0;
 #else
 			skb->mac_header = NULL;
 #endif
 			skb_pull(skb, sizeof(struct ethhdr));
 		}
-		p = skb_network_header(skb);
-		start = p - overhead;
-		copied = sizeof(struct iphdr);
 		skb_set_network_header(skb, skb_network_offset(skb)-overhead);
 		skb_push(skb, overhead);
-		for (i = 0; i < copied; i++) {
-			*start++ = *p++;
-		}
+		// copy ip headers ahead
+		memcpy(skb_network_header(skb) - overhead, skb_network_header(skb), sizeof(struct iphdr));
 		nh = (struct iphdr *)skb_network_header(skb);
 		nh->ihl += overhead/4;
 		nh->tot_len = htons(ntohs(nh->tot_len) + overhead);
 
-		start = skb_network_header(skb);
-		opthdr = (struct opthdr *)(start + sizeof(struct iphdr));
+		charp = skb_network_header(skb);
+		opthdr = (struct opthdr *)(charp + sizeof(struct iphdr));
 		opthdr->type = 40;
 		opthdr->len = overhead;
 		optdata = (struct optdata *)((char *)opthdr + sizeof(struct opthdr));
 		// save last byte of src ip to opt src
-		optdata->src = start[15];
-		optdata->dst = start[19];
-		start = skb_network_header(skb);
-//		printk(KERN_INFO "start[16]..[19] %d %d %d %d %d\n", start[16], start[17], start[18], start[19], start[18] == 0x02);
+		optdata->src = charp[15];
+		optdata->dst = charp[19];
 		nh->daddr = dst;
 		//TODO checksum ?
 //		printmachdr("IPO ipo_xmit mac new: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
@@ -236,7 +226,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 			goto tx_error;
 		}
 		nh->saddr = inet_select_addr(rt->dst.dev, rt_nexthop(rt, nh->daddr), RT_SCOPE_UNIVERSE);
-		printk(KERN_INFO "IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
+//		printk(KERN_INFO "IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
 //		nh->saddr = rt->rt_gateway;
 		skb_dst_drop(skb);
 		skb_dst_set(skb, &rt->dst);
