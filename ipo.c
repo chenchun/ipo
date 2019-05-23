@@ -11,6 +11,7 @@
 #include <linux/skbuff.h>
 #include <linux/if_tunnel.h>
 #include<linux/inet.h>
+#include<linux/inetdevice.h>
 
 #include <net/ip_tunnels.h>
 #include <net/rtnetlink.h>
@@ -213,21 +214,14 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		// save last byte of src ip to opt src
 		optdata->src = start[15];
 		optdata->dst = start[19];
-		//TODO remove following lines and replace them with src ip and dst ip
 		start = skb_network_header(skb);
 //		printk(KERN_INFO "start[16]..[19] %d %d %d %d %d\n", start[16], start[17], start[18], start[19], start[18] == 0x02);
-		if (start[18] == 0x01) {
-			nh->saddr = in_aton("10.0.0.3");
-		} else if (start[18] == 0x02) {
-			nh->saddr = in_aton("10.0.0.2");
-		}
 		nh->daddr = dst;
 		//TODO checksum ?
 //		printmachdr("IPO ipo_xmit mac new: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
-		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
 		rt = ip_route_output_ipo(dev_net(dev), &fl4,
 									nh->protocol,
-									nh->daddr, nh->saddr,
+									nh->daddr, 0,
 									TUNNEL_NO_KEY,
 									RT_TOS(nh->tos), 0);
 		if (IS_ERR(rt)) {
@@ -241,8 +235,12 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 			dev->stats.collisions++;
 			goto tx_error;
 		}
+		nh->saddr = inet_select_addr(rt->dst.dev, rt_nexthop(rt, nh->daddr), RT_SCOPE_UNIVERSE);
+		printk(KERN_INFO "IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
+//		nh->saddr = rt->rt_gateway;
 		skb_dst_drop(skb);
 		skb_dst_set(skb, &rt->dst);
+		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
 		iptunnel_xmit_ipo(skb, dev);
 	} else {
 		// TODO
