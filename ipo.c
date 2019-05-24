@@ -17,6 +17,7 @@
 #include <net/rtnetlink.h>
 #include <net/dst.h>
 #include <net/xfrm.h>
+#include <net/protocol.h>
 
 // ip option header
 struct opthdr {
@@ -122,15 +123,24 @@ static void ipo_get_stats64(struct net_device *dev,
 }
 
 // Check include/linux/netdevice.h for enum rx_handler_result
-static rx_handler_result_t ipo_rx(struct sk_buff **pskb)
+static int ipo_rx(struct sk_buff *skb)
 {
-	struct sk_buff *skb = *pskb;
 	struct iphdr *nh;
 	nh = (struct iphdr *)skb_network_header(skb);
 	printk(KERN_INFO "IPO ipo_rx saddr %d, daddr %d\n", nh->saddr, nh->daddr);
 	printiphdr("IPO ipo_rx: ", (char *) skb_network_header(skb), 24);
-	return RX_HANDLER_PASS;
+	return RX_HANDLER_CONSUMED;
 }
+
+static void ipo_err(struct sk_buff *skb, u32 info) {}
+
+const int IPPROTO_IPO = 254;
+
+static const struct net_protocol net_ipo_protocol = {
+	.handler     = ipo_rx,
+	.err_handler = ipo_err,
+	.netns_ok    = 1,
+};
 
 static inline void iptunnel_xmit_ipo(struct sk_buff *skb, struct net_device *dev)
 {
@@ -197,6 +207,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		nh = (struct iphdr *)skb_network_header(skb);
 		nh->ihl += overhead/4;
 		nh->tot_len = htons(ntohs(nh->tot_len) + overhead);
+		nh->protocol = IPPROTO_IPO;
 
 		charp = skb_network_header(skb);
 		opthdr = (struct opthdr *)(charp + sizeof(struct iphdr));
@@ -247,11 +258,7 @@ tx_error:
 static int ipo_newlink(struct net *net, struct net_device *dev,
 					   struct nlattr *tb[], struct nlattr *data[])
 {
-	int err;
 	printk(KERN_INFO "IPO ipo_newlink %s", dev->name);
-	err = netdev_rx_handler_register(dev, ipo_rx, NULL);
-	if (err < 0)
-		return err;
 	return register_netdevice(dev);
 }
 
@@ -336,7 +343,10 @@ static struct rtnl_link_ops ipo_link_ops __read_mostly = {
 static int __init ipo_init_module(void)
 {
 	int err = 0;
-
+	if (inet_add_protocol(&net_ipo_protocol, IPPROTO_IPO) < 0) {
+		pr_err("can't add protocol\n");
+		return -EAGAIN;
+	}
 	rtnl_lock();
 	err = __rtnl_link_register(&ipo_link_ops);
 	rtnl_unlock();
