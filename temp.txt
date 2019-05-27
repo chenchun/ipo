@@ -34,44 +34,7 @@ Tracing kprobe myprobe. Ctrl-C to end.
  => SyS_sendto
  => system_call_fastpath
 
-            ping-19671 [001] d.s1 62569.665189: myprobe: (ip_route_input_noref+0x0/0x220)
-            ping-19671 [001] d.s1 62569.665200: <stack trace>
- => ip_route_input_noref
- => ip_rcv
- => __netif_receive_skb_core
- => __netif_receive_skb
- => process_backlog
- => net_rx_action
- => __do_softirq
- => call_softirq
- => do_softirq
- => __local_bh_enable_ip
- => local_bh_enable
- => ip_finish_output
- => ip_output
- => ip_local_out_sk
- => ip_send_skb
- => ip_push_pending_frames
- => raw_sendmsg
- => inet_sendmsg
- => sock_sendmsg
- => SYSC_sendto
- => SyS_sendto
- => system_call_fastpath
-^C
-
-
-            ping-19900 [000] d... 62724.778299: myprobe: (ip_route_output_flow+0x0/0x60)
-            ping-19900 [000] d... 62724.778308: <stack trace>
- => ip_route_output_flow
- => inet_sendmsg
- => sock_sendmsg
- => SYSC_sendto
- => SyS_sendto
- => system_call_fastpath
-^C
-
-
+------
 
 ping -c 1 192.168.1.4
 
@@ -92,3 +55,41 @@ ping -c 1 192.168.1.4
   => SYSC_sendto
   => SyS_sendto
   => system_call_fastpath
+
+------
+
+[root@master ipo]# ip netns exec ctn ping -c 1 192.168.2.2
+PING 192.168.2.2 (192.168.2.2) 56(84) bytes of data.
+
+--- 192.168.2.2 ping statistics ---
+1 packets transmitted, 0 received, 100% packet loss, time 0ms
+
+[root@node1 kernel]# ./kprobe -s 'p:myprobe ipo_rx'
+Tracing kprobe myprobe. Ctrl-C to end.
+          <idle>-0     [000] dNs.   917.170231: myprobe: (ipo_rx+0x0/0x53 [ipo])
+          <idle>-0     [000] dNs.   917.170240: <stack trace>
+ => ipo_rx
+ => ip_local_deliver
+ => ip_rcv_finish
+ => ip_rcv
+ => __netif_receive_skb_core
+ => __netif_receive_skb
+ => netif_receive_skb_internal
+ => napi_gro_receive
+ => e1000_clean_rx_irq
+ => e1000_clean
+ => net_rx_action
+ => __do_softirq
+ => call_softirq
+ => do_softirq
+ => irq_exit
+ => do_IRQ
+ => ret_from_intr
+ => default_idle
+ => arch_cpu_idle
+ => cpu_startup_entry
+ => rest_init
+ => start_kernel
+ => x86_64_start_reservations
+ => x86_64_start_kernel
+ => start_cpu

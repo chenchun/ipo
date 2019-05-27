@@ -18,6 +18,7 @@
 #include <net/dst.h>
 #include <net/xfrm.h>
 #include <net/protocol.h>
+#include <net/ip_fib.h>
 
 // ip option header
 struct opthdr {
@@ -126,15 +127,68 @@ static void ipo_get_stats64(struct net_device *dev,
 static int ipo_rx(struct sk_buff *skb)
 {
 	struct iphdr *nh;
+	struct optdata *optdata;
+	struct flowi4 fl4;
+	struct rtable *rt;
+	struct fib_result res;
+	int err;
+	char *pchar;
+	struct net_device *dev = skb->dev;
 	nh = (struct iphdr *)skb_network_header(skb);
-	printk(KERN_INFO "IPO ipo_rx saddr %d, daddr %d\n", nh->saddr, nh->daddr);
-	printiphdr("IPO ipo_rx: ", (char *) skb_network_header(skb), 24);
-	return RX_HANDLER_CONSUMED;
+	printk(KERN_INFO "IPO ipo_rx saddr %pI4, daddr %pI4\n", &nh->saddr, &nh->daddr);
+	printiphdr("IPO ipo_rx: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+	// TODO delete options?
+	// TODO how to restore protocol
+	nh->protocol = IPPROTO_ICMP;
+	skb->protocol = IPPROTO_ICMP;
+	// search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
+	// inet_dump_fib ?
+//	memset(&fl4, 0, sizeof(fl4));
+//	fl4.flowi4_oif = dev->ifindex;
+//	fl4.flowi4_tos = RT_TOS(nh->tos);
+//	fl4.flowi4_proto = nh->protocol;
+//	fl4.fl4_gre_key = TUNNEL_NO_KEY;
+//	err = fib_lookup(dev_net(dev), &fl4, &res);
+//	if (err != 0) {
+//		printk(KERN_WARNING "IPO ipo_rx fib_lookup error\n");
+//		goto rx_error;
+//	}
+//	printk(KERN_INFO "IPO ipo_rx rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
+	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
+	if (nh->saddr == in_aton("10.0.0.2")) {
+		pchar = (char*)&nh->saddr;
+		pchar[0] = 192;
+		pchar[1] = 168;
+		pchar[2] = 1;
+		pchar[3] = optdata->src;
+		pchar[4] = 192;
+		pchar[5] = 168;
+		pchar[6] = 2;
+		pchar[7] = optdata->dst;
+
+	} else if (nh->saddr == in_aton("10.0.0.3")) {
+		pchar = (char*)&nh->saddr;
+		pchar[0] = 192;
+		pchar[1] = 168;
+		pchar[2] = 2;
+		pchar[3] = optdata->src;
+		pchar[4] = 192;
+		pchar[5] = 168;
+		pchar[6] = 1;
+		pchar[7] = optdata->dst;
+	}
+	printiphdr("IPO ipo_rx decode: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+	__skb_tunnel_rx(skb, dev, dev_net(dev));
+	netif_rx(skb);
+	return 0;
+rx_error:
+	dev->stats.rx_errors++;
+	return -1;
 }
 
 static void ipo_err(struct sk_buff *skb, u32 info) {}
 
-const int IPPROTO_IPO = 254;
+const int IPPROTO_IPO = 253;
 
 static const struct net_protocol net_ipo_protocol = {
 	.handler     = ipo_rx,
@@ -169,7 +223,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct opthdr *opthdr;
 	struct optdata *optdata;
 	struct flowi4 fl4;
-	struct rtable *rt;		/* Route to the other host */
+	struct rtable *rt;
 	__be32 dst;
 	if (ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP) {
 		goto tx_error;
@@ -357,6 +411,7 @@ static int __init ipo_init_module(void)
 static void __exit ipo_cleanup_module(void)
 {
 	rtnl_link_unregister(&ipo_link_ops);
+	inet_del_protocol(&net_ipo_protocol, IPPROTO_IPO);
 	printk(KERN_INFO "IPO uninstalled\n");
 }
 
