@@ -4,7 +4,7 @@ project(ipo)
 
 add_executable("ipo" ipo.c)
 
-set(KERNEL_ROOT "/home/ramichen/project/c/linux")
+set(KERNEL_ROOT "/home/ramichen/project/c/centos/linux-3.10.0-957.12.2.el7")
 
 include_directories(
         # kernel headers

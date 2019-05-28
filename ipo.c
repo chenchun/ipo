@@ -19,6 +19,8 @@
 #include <net/xfrm.h>
 #include <net/protocol.h>
 #include <net/ip_fib.h>
+#include <net/ip.h>
+#include <net/gro_cells.h>
 
 // ip option header
 struct opthdr {
@@ -32,8 +34,35 @@ struct optdata {
 };
 
 struct ipo_dev {
-	struct ip_tunnel_parm parms;
+	struct gro_cells	gro_cells;
 };
+
+struct ipo_net {
+	struct ipo_dev* ipo_dev;
+};
+
+static int ipo_net_id;
+
+static int __net_init ipo_init_net(struct net *net)
+{
+	return 0;
+}
+
+static void __net_exit ipo_exit_net(struct net *net)
+{
+}
+
+static struct pernet_operations ipo_net_ops = {
+	.init = ipo_init_net,
+	.exit = ipo_exit_net,
+	.id   = &ipo_net_id,
+	.size = sizeof(struct ipo_net),
+};
+
+static void set_multicast_list(struct net_device *dev) {
+	printk(KERN_INFO "IPO set_multicast_list %s", dev->name);
+}
+
 
 const unsigned short overhead = sizeof(struct opthdr) + sizeof(struct optdata);
 
@@ -90,12 +119,6 @@ static inline struct rtable *ip_route_output_ipo(struct net *net,
 
 //static int numipos = 1;
 
-/* fake multicast ability */
-static void set_multicast_list(struct net_device *dev)
-{
-	printk(KERN_INFO "IPO set_multicast_list %s", dev->name);
-}
-
 struct pcpu_dstats {
 	u64			tx_packets;
 	u64			tx_bytes;
@@ -128,19 +151,37 @@ static int ipo_rx(struct sk_buff *skb)
 {
 	struct iphdr *nh;
 	struct optdata *optdata;
-	struct flowi4 fl4;
-	struct rtable *rt;
-	struct fib_result res;
+//	struct flowi4 fl4;
+//	struct rtable *rt;
+//	struct fib_result res;
 	int err;
 	char *pchar;
 	struct net_device *dev = skb->dev;
+	struct net *net = dev_net(dev);
+	const struct iphdr *iph = ip_hdr(skb);
+	struct ipo_net *ipon = net_generic(net, ipo_net_id);
+	if (iptunnel_pull_header(skb, 0, htons(ETH_P_IP), false)) {
+		goto drop;
+	}
 	nh = (struct iphdr *)skb_network_header(skb);
-	printk(KERN_INFO "IPO ipo_rx saddr %pI4, daddr %pI4\n", &nh->saddr, &nh->daddr);
-	printiphdr("IPO ipo_rx: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+	printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+	printk(KERN_INFO "IPO ipo_rx dev %s saddr %pI4, daddr %pI4, skb.proto %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d\n", dev->name, &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed);
+	if (skb_mac_header_was_set(skb)) {
+		printk(KERN_INFO "IPO ipo_rx mac header present, take off mac header\n");
+//		skb->mac_header = skb->network_header;
+//		__pskb_pull(skb, sizeof(struct ethhdr));
+#ifdef NET_SKBUFF_DATA_USES_OFFSET
+		skb->mac_header = ~0;
+#else
+		skb->mac_header = NULL;
+#endif
+		skb_pull(skb, ETH_HLEN);
+	}
+//	skb->ip_summed = CHECKSUM_UNNECESSARY;
+//	printiphdr("IPO ipo_rx: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 	// TODO delete options?
 	// TODO how to restore protocol
 	nh->protocol = IPPROTO_ICMP;
-	skb->protocol = IPPROTO_ICMP;
 	// search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
 	// inet_dump_fib ?
 //	memset(&fl4, 0, sizeof(fl4));
@@ -177,18 +218,48 @@ static int ipo_rx(struct sk_buff *skb)
 		pchar[6] = 1;
 		pchar[7] = optdata->dst;
 	}
-	printiphdr("IPO ipo_rx decode: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
-	__skb_tunnel_rx(skb, dev, dev_net(dev));
-	netif_rx(skb);
+//	printmachdr("IPO ipo_rx mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
+//	skb_reset_mac_header(skb);
+//	skb->protocol = eth_type_trans(skb, dev);
+//	printmachdr("IPO ipo_rx mac after: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
+//	skb_reset_network_header(skb);
+//	printiphdr("IPO ipo_rx decode: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+//	err = netif_rx(skb);
+	err = IP_ECN_decapsulate(iph, skb);
+	if (unlikely(err)) {
+//		net_info_ratelimited("non-ECT from %pI4 with TOS=%#x\n",
+//							 &iph->saddr, iph->tos);
+		printk(KERN_INFO "IPO ipo_rx err %d\n", err);
+		if (err > 1) {
+//			++ipon->dev->stats.rx_frame_errors;
+//			++ipon->dev->stats.rx_errors;
+			goto drop;
+		}
+	}
+
+//	tstats = this_cpu_ptr(tunnel->dev->tstats);
+//	u64_stats_update_begin(&tstats->syncp);
+//	tstats->rx_packets++;
+//	tstats->rx_bytes += skb->len;
+//	u64_stats_update_end(&tstats->syncp);
+
+	skb_scrub_packet(skb, false);
+	printk(KERN_INFO "IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
+	printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+	gro_cells_receive(&ipon->ipo_dev->gro_cells, skb);
 	return 0;
-rx_error:
-	dev->stats.rx_errors++;
-	return -1;
+drop:
+	kfree_skb(skb);
+	return 0;
 }
 
-static void ipo_err(struct sk_buff *skb, u32 info) {}
+static void ipo_err(struct sk_buff *skb, u32 info) {
+	struct iphdr *nh;
+	nh = (struct iphdr *)skb_network_header(skb);
+	printk(KERN_INFO "IPO ipo_err saddr %pI4, daddr %pI4, skb.proto %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d\n", &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed);
+}
 
-const int IPPROTO_IPO = 253;
+const int IPPROTO_IPO = 143;
 
 static const struct net_protocol net_ipo_protocol = {
 	.handler     = ipo_rx,
@@ -225,15 +296,15 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct flowi4 fl4;
 	struct rtable *rt;
 	__be32 dst;
+	nh = (struct iphdr *)skb_network_header(skb);
+	printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 	if (ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP) {
 		goto tx_error;
 	}
-	nh = (struct iphdr *)skb_network_header(skb);
 	if (unlikely(skb_headroom(skb) < overhead)) {
 		printk(KERN_WARNING "IPO headroom %d too small\n", skb_headroom(skb));
 		goto tx_error;
 	}
-//	printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 	if (nh->ihl == 5) {
 		if (!dev->rx_handler)
 			printk(KERN_WARNING "IPO ipo_xmit rx handler should have registed");
@@ -245,7 +316,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		printk(KERN_INFO "IPO rt.dst %pI4\n", &rt->rt_gateway);
 		dst = rt->rt_gateway;
 		printiphdr("IPO ipo_xmit ori: ", skb_network_header(skb), ntohs(nh->tot_len));
-//		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 		if (skb_mac_header_was_set(skb)) {
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
 			skb->mac_header = ~0;
@@ -296,6 +367,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		skb_dst_drop(skb);
 		skb_dst_set(skb, &rt->dst);
 		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
+		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 		iptunnel_xmit_ipo(skb, dev);
 	} else {
 		// TODO
@@ -312,12 +384,22 @@ tx_error:
 static int ipo_newlink(struct net *net, struct net_device *dev,
 					   struct nlattr *tb[], struct nlattr *data[])
 {
+	int err;
+	struct ipo_net *ipon = net_generic(net, ipo_net_id);
+	struct ipo_dev *ipo = netdev_priv(dev);
 	printk(KERN_INFO "IPO ipo_newlink %s", dev->name);
-	return register_netdevice(dev);
+	err = register_netdevice(dev);
+	if (err) {
+		return err;
+	}
+	ipon->ipo_dev = ipo;
+	return 0;
 }
 
 static int ipo_dev_init(struct net_device *dev)
 {
+	struct ipo_dev *ipo = netdev_priv(dev);
+	int err;
 	printk(KERN_INFO "IPO ipo_dev_init %s", dev->name);
 	dev->dstats = alloc_percpu(struct pcpu_dstats);
 	if (!dev->dstats)
@@ -325,11 +407,18 @@ static int ipo_dev_init(struct net_device *dev)
 	// preserve headroom for option fields.
 	// It seems needed_headroom multiples by 4
 	dev->needed_headroom = overhead;
+	err = gro_cells_init(&ipo->gro_cells, dev);
+	if (err) {
+		free_percpu(dev->dstats);
+		return err;
+	}
 	return 0;
 }
 
 static void ipo_dev_uninit(struct net_device *dev)
 {
+	struct ipo_dev *ipo = netdev_priv(dev);
+	gro_cells_destroy(&ipo->gro_cells);
 	free_percpu(dev->dstats);
 }
 
@@ -346,32 +435,53 @@ static const struct net_device_ops ipo_netdev_ops = {
 	.ndo_init		= ipo_dev_init,
 	.ndo_uninit		= ipo_dev_uninit,
 	.ndo_start_xmit		= ipo_xmit,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_set_rx_mode	= set_multicast_list,
-	.ndo_set_mac_address	= eth_mac_addr,
+//	.ndo_validate_addr      = eth_validate_addr,
+//	.ndo_set_mac_address    = eth_mac_addr,
+//	.ndo_set_rx_mode        = set_multicast_list,
 	.ndo_get_stats64	= ipo_get_stats64,
 	.ndo_change_carrier	= ipo_change_carrier,
 };
 
+//static void ipo_setup(struct net_device *dev)
+//{
+//	printk(KERN_INFO "IPO ipo_setup %s", dev->name);
+//	ether_setup(dev);
+//
+//	/* Initialize the device structure. */
+//	dev->netdev_ops = &ipo_netdev_ops;
+//	dev->destructor = free_netdev;
+//
+//	dev->tx_queue_len = 0;
+//	dev->type		= ARPHRD_NONE;
+//	dev->flags |= IFF_NOARP;
+//	dev->flags &= ~IFF_MULTICAST;
+//	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
+//	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
+//	dev->features	|= NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_TSO;
+//	dev->features	|= NETIF_F_HW_CSUM | NETIF_F_HIGHDMA | NETIF_F_LLTX;
+//	dev->hw_features |= NETIF_F_GSO_SOFTWARE;
+//	eth_hw_addr_random(dev);
+//}
+
+#define IPO_FEATURES (NETIF_F_SG |		\
+		       NETIF_F_FRAGLIST |	\
+		       NETIF_F_HIGHDMA |	\
+		       NETIF_F_GSO_SOFTWARE |	\
+		       NETIF_F_HW_CSUM)
+
 static void ipo_setup(struct net_device *dev)
 {
-	printk(KERN_INFO "IPO ipo_setup %s", dev->name);
 	ether_setup(dev);
+	dev->netdev_ops		= &ipo_netdev_ops;
 
-	/* Initialize the device structure. */
-	dev->netdev_ops = &ipo_netdev_ops;
-	dev->destructor = free_netdev;
+	dev->type		= ARPHRD_TUNNEL;
+	dev->flags		= IFF_NOARP;
+	dev->addr_len		= 4;
+	dev->features		|= NETIF_F_LLTX;
+	netif_keep_dst(dev);
 
-	/* Fill in device structure with ethernet-generic values. */
-	dev->tx_queue_len = 0;
-	dev->type		= ARPHRD_NONE;
-	dev->flags |= IFF_NOARP;
-	dev->flags &= ~IFF_MULTICAST;
-	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
-	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
-	dev->features	|= NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_TSO;
-	dev->features	|= NETIF_F_HW_CSUM | NETIF_F_HIGHDMA | NETIF_F_LLTX;
-	eth_hw_addr_random(dev);
+	dev->features		|= IPO_FEATURES;
+	dev->hw_features	|= IPO_FEATURES;
 }
 
 static int ipo_validate(struct nlattr *tb[], struct nlattr *data[])
@@ -391,8 +501,8 @@ static struct rtnl_link_ops ipo_link_ops __read_mostly = {
 	.setup		= ipo_setup,
 	.validate	= ipo_validate,
 	.newlink	= ipo_newlink,
+	.priv_size	= sizeof(struct ipo_dev),
 };
-//	.priv_size	= sizeof(struct ipo_dev),
 
 static int __init ipo_init_module(void)
 {
@@ -401,9 +511,15 @@ static int __init ipo_init_module(void)
 		pr_err("can't add protocol\n");
 		return -EAGAIN;
 	}
+	err = register_pernet_device(&ipo_net_ops);
+	if (err < 0)
+		return err;
 	rtnl_lock();
 	err = __rtnl_link_register(&ipo_link_ops);
 	rtnl_unlock();
+	if (err < 0) {
+		unregister_pernet_device(&ipo_net_ops);
+	}
 	printk(KERN_INFO "IPO installed overhead %d\n", overhead);
 	return err;
 }
@@ -412,6 +528,7 @@ static void __exit ipo_cleanup_module(void)
 {
 	rtnl_link_unregister(&ipo_link_ops);
 	inet_del_protocol(&net_ipo_protocol, IPPROTO_IPO);
+	unregister_pernet_device(&ipo_net_ops);
 	printk(KERN_INFO "IPO uninstalled\n");
 }
 

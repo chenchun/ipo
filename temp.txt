@@ -93,3 +93,107 @@ Tracing kprobe myprobe. Ctrl-C to end.
  => x86_64_start_reservations
  => x86_64_start_kernel
  => start_cpu
+
+[root@node1 kernel]# ./kprobe -s 'p:myprobe icmp_rcv'
+Tracing kprobe myprobe. Ctrl-C to end.
+          <idle>-0     [000] dNs. 99195.342671: myprobe: (icmp_rcv+0x0/0x370)
+          <idle>-0     [000] dNs. 99195.342693: <stack trace>
+ => icmp_rcv
+ => ip_local_deliver
+ => ip_rcv_finish
+ => ip_rcv
+ => __netif_receive_skb_core
+ => __netif_receive_skb
+ => netif_receive_skb_internal
+ => napi_gro_receive
+ => e1000_clean_rx_irq
+ => e1000_clean
+ => net_rx_action
+ => __do_softirq
+ => call_softirq
+ => do_softirq
+ => irq_exit
+ => do_IRQ
+ => ret_from_intr
+ => default_idle
+ => arch_cpu_idle
+ => cpu_startup_entry
+ => rest_init
+ => start_kernel
+ => x86_64_start_reservations
+ => x86_64_start_kernel
+ => start_cpu
+
+ // with ipip tunnel
+ [root@node1 kernel]# ./kprobe -s 'p:myprobe icmp_rcv'
+ Tracing kprobe myprobe. Ctrl-C to end.
+      ksoftirqd/0-3     [000] d.s.  5966.581294: myprobe: (icmp_rcv+0x0/0x370)
+      ksoftirqd/0-3     [000] d.s.  5966.581302: <stack trace>
+  => icmp_rcv
+  => ip_local_deliver
+  => ip_rcv_finish
+  => ip_rcv
+  => __netif_receive_skb_core
+  => __netif_receive_skb
+  => process_backlog
+  => net_rx_action
+  => __do_softirq
+  => run_ksoftirqd
+  => smpboot_thread_fn
+  => kthread
+  => ret_from_fork_nospec_end
+
+
+[root@node1 kernel]# ./funcgraph -m 3 __iptunnel_pull_header
+Tracing "__iptunnel_pull_header"... Ctrl-C to end.
+ 0)               |  __iptunnel_pull_header() {
+ 0)   0.201 us    |    skb_pull_rcsum();
+ 0)   0.334 us    |    skb_scrub_packet();
+ 0)   3.657 us    |  }
+
+[root@node1 kernel]# ./funcgraph -m 3 ip_tunnel_rcv
+Tracing "ip_tunnel_rcv"... Ctrl-C to end.
+ 0)               |  ip_tunnel_rcv [ip_tunnel]() {
+ 0)   0.074 us    |    skb_scrub_packet();
+ 0)   0.052 us    |    napi_schedule_prep();
+ 0)               |    __napi_schedule() {
+ 0)   0.048 us    |      __raise_softirq_irqoff();
+ 0)   0.382 us    |    }
+ 0)   2.067 us    |  }
+
+[root@node1 kernel]# ./funcgraph -m 4 ipip_rcv
+Tracing "ipip_rcv"... Ctrl-C to end.
+ 0)               |  ipip_rcv [ipip]() {
+ 0)   2.061 us    |    ip_tunnel_lookup [ip_tunnel]();
+ 0)               |    __iptunnel_pull_header() {
+ 0)   0.174 us    |      skb_pull_rcsum();
+ 0)   0.325 us    |      skb_scrub_packet();
+ 0)   2.772 us    |    }
+ 0)               |    ip_tunnel_rcv [ip_tunnel]() {
+ 0)   0.285 us    |      skb_scrub_packet();
+ 0)   0.142 us    |      napi_schedule_prep();
+ 0)               |      __napi_schedule() {
+ 0)   0.145 us    |        __raise_softirq_irqoff();
+ 0)   1.309 us    |      }
+ 0)   6.051 us    |    }
+ 0) + 15.809 us   |  }
+
+ [root@node1 kernel]# ./funcgraph -m 3 ipo_rx
+ Tracing "ipo_rx"... Ctrl-C to end.
+  0)               |  ipo_rx [ipo]() {
+  0)               |    __iptunnel_pull_header() {
+  0)   0.208 us    |      skb_pull_rcsum();
+  0)   0.302 us    |      skb_scrub_packet();
+  0)   3.188 us    |    }
+  0)               |    printk() {
+  0) + 55.135 us   |      vprintk_default();
+  0) + 57.034 us   |    }
+  0)   0.549 us    |    in_aton();
+  0)               |    printk() {
+  0) + 22.994 us   |      vprintk_default();
+  0) + 24.270 us   |    }
+  0)   0.148 us    |    napi_schedule_prep();
+  0)               |    __napi_schedule() {
+  0)   0.142 us    |      __raise_softirq_irqoff();
+  0)   1.275 us    |    }
+  0) + 94.297 us   |  }
