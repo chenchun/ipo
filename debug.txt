@@ -1,0 +1,114 @@
+static inline unsigned char *skb_mac_header(const struct sk_buff *skb)
+{
+	return skb->head + skb->mac_header;
+}
+
+static inline unsigned char *skb_mac_header(const struct sk_buff *skb)
+{
+	return skb->mac_header;
+}
+
+rmmod ipo; make clean; make && insmod ipo.ko && ./createcontainer.sh && ./init.sh && ip netns exec ctn ping -c 1 192.168.2.3
+
+ip route add 192.168.1.0/24 via 10.0.0.2 dev eth1
+
+ip netns add ctn
+ip link add v1 type veth peer name v2
+ip link set v2 up
+ip link set v1 netns ctn
+ip netns exec ctn ip add add 192.168.1.3/32 dev v1
+ip netns exec ctn ip link set v1 up
+ip netns exec ctn ip link set lo up
+ip netns exec ctn ip r add 169.254.0.1 dev v1 scope link
+ip netns exec ctn ip r add default via 169.254.0.1 dev v1 scope global
+ip netns exec ctn ip n add 169.254.0.1 dev v1 lladdr `cat /sys/class/net/v2/address`
+ip route add 192.168.1.3 dev v2
+
+
+ip netns exec ctn ping -c 1 192.168.2.2
+
+tcpdump -vvnneSs 0 -i any "ip[9]==143" or icmp
+
+./kprobe 'r:ip_rcv $retval'
+
+/sys/kernel/debug/tracing/available_filter_functions
+
+netstat -s 
+IPReversePathFilter: 8
+
+for i in /proc/sys/net/ipv4/conf/*/rp_filter ; do echo 0 > $i ; done
+
+
+
+[root@node1 kernel]# ./funcgraph -m 5 icmp_rcv
+Tracing "icmp_rcv"... Ctrl-C to end.
+ 0)               |  icmp_rcv() {
+ 0)               |    __skb_checksum_complete() {
+ 0)               |      skb_checksum() {
+ 0)               |        __skb_checksum() {
+ 0)   0.234 us    |          csum_partial();
+ 0)   0.931 us    |        }
+ 0)   1.396 us    |      }
+ 0)   1.829 us    |    }
+ 0)               |    icmp_echo() {
+ 0)               |      icmp_echo.part.22() {
+ 0)               |        icmp_reply.constprop.24() {
+ 0)   0.052 us    |          __ip_options_echo();
+ 0)   0.044 us    |          local_bh_disable();
+ 0)   0.056 us    |          icmpv4_global_allow();
+ 0)   0.277 us    |          _raw_spin_trylock();
+ 0)   0.128 us    |          fib_compute_spec_dst();
+ 0)   0.880 us    |          security_skb_classify_flow();
+ 0)   1.508 us    |          ip_route_output_flow();
+ 0)   0.090 us    |          local_bh_enable();
+ 0)   6.447 us    |        }
+ 0)   6.917 us    |      }
+ 0)   7.428 us    |    }
+ 0)               |    kfree_skb() {
+ 0)               |      skb_release_all() {
+ 0)   0.099 us    |        skb_release_head_state();
+ 0)               |        skb_release_data() {
+ 0)   0.593 us    |          page_frag_free();
+ 0)   1.163 us    |        }
+ 0)   2.014 us    |      }
+ 0)               |      kfree_skbmem() {
+ 0)   0.206 us    |        kmem_cache_free();
+ 0)   0.731 us    |      }
+ 0)   3.537 us    |    }
+ 0) + 14.548 us   |  }
+
+[root@node1 kernel]# ./funcgraph -m 5 icmp_rcv
+Tracing "icmp_rcv"... Ctrl-C to end.
+ 0)               |  icmp_rcv() {
+ 0)               |    icmp_echo() {
+ 0)               |      icmp_echo.part.22() {
+ 0)               |        icmp_reply.constprop.24() {
+ 0)   0.227 us    |          __ip_options_echo();
+ 0)   0.172 us    |          local_bh_disable();
+ 0)   0.244 us    |          icmpv4_global_allow();
+ 0)   0.501 us    |          _raw_spin_trylock();
+ 0)   0.209 us    |          fib_compute_spec_dst();
+ 0)   1.523 us    |          security_skb_classify_flow();
+ 0)   4.104 us    |          ip_route_output_flow();
+ 0)   0.196 us    |          icmpv4_xrlim_allow.isra.19();
+ 0) + 89.970 us   |          icmp_push_reply();
+ 0)   0.184 us    |          dst_release();
+ 0)   0.328 us    |          local_bh_enable();
+ 0) ! 111.444 us  |        }
+ 0) ! 112.889 us  |      }
+ 0) ! 114.519 us  |    }
+ 0)               |    kfree_skb() {
+ 0)               |      skb_release_all() {
+ 0)   0.237 us    |        skb_release_head_state();
+ 0)               |        skb_release_data() {
+ 0)   0.810 us    |          page_frag_free();
+ 0)   2.907 us    |        }
+ 0)   5.580 us    |      }
+ 0)               |      kfree_skbmem() {
+ 0)   0.233 us    |        kmem_cache_free();
+ 0)   1.905 us    |      }
+ 0) + 10.334 us   |    }
+ 0) ! 129.054 us  |  }
+
+
+
