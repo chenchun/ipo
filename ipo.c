@@ -161,8 +161,12 @@ static int ipo_rx(struct sk_buff *skb)
 //	}
 	nh = (struct iphdr *)skb_network_header(skb);
 	printk(KERN_WARNING "IPO skb->len %u 0.2\n", skb->len);
-	skb_linearize_cow(skb);
-	printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %u, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->end, skb->len, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+	printk(KERN_INFO "head %p, tail %d, "
+				  "data %p, end %d, len %u, headroom %d, "
+	  "mac %d, network %d, transport %d, ip payload len %d\n",
+		   skb->head, skb->tail,
+		   skb->data, skb->end, skb->len, skb_headroom(skb),
+		   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 	printk(KERN_INFO "IPO ipo_rx dev %s saddr %pI4, daddr %pI4, skb.proto %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d, nh->version %d, ntohs(nh->tot_len)=%d, nh->ihl*4=%d, nh->ttl=%d\n", dev->name, &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
 //	if (skb_mac_header_was_set(skb)) {
 //		printk(KERN_INFO "IPO ipo_rx mac header present, take off mac header\n");
@@ -176,7 +180,7 @@ static int ipo_rx(struct sk_buff *skb)
 //		skb_pull(skb, ETH_HLEN);
 //	}
 	printk(KERN_WARNING "IPO skb->len %u 0.1\n", skb->len);
-	skb->ip_summed = CHECKSUM_UNNECESSARY;
+//	skb->ip_summed = CHECKSUM_UNNECESSARY;
 //	printiphdr("IPO ipo_rx: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 	// TODO delete options?
 	// TODO how to restore protocol
@@ -219,8 +223,9 @@ static int ipo_rx(struct sk_buff *skb)
 		pchar[7] = optdata->dst;
 	}
 	printk(KERN_WARNING "IPO skb->len %u 0\n", skb->len);
-	nh->check = 0;
-	nh->check = ip_fast_csum((u8 *)&nh, nh->ihl);
+	ip_send_check(nh);
+	// push back IP hdr
+	skb_push_rcsum(skb, sizeof(struct iphdr) + overhead);
 //	printmachdr("IPO ipo_rx mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 //	skb_reset_mac_header(skb);
 //	skb->protocol = eth_type_trans(skb, dev);
@@ -245,12 +250,22 @@ static int ipo_rx(struct sk_buff *skb)
 		printk(KERN_WARNING "IPO pskb_may_pull fail\n");
 		goto drop;
 	}
+	printk(KERN_INFO "head %p, tail %d, "
+		   "data %p, end %d, len %u, headroom %d, "
+		   "mac %d, network %d, transport %d, ip payload len %d\n",
+		   skb->head, skb->tail,
+		   skb->data, skb->end, skb->len, skb_headroom(skb),
+		   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 	len = ntohs(nh->tot_len);
 	if (skb->len < len) {
 		printk(KERN_WARNING "IPO IPSTATS_MIB_INTRUNCATEDPKTS skb->len %u len %d fail\n", skb->len, len);
 		goto drop;
 	} else if (len < (nh->ihl*4)) {
 		printk(KERN_WARNING "IPO ihl fail\n");
+		goto drop;
+	}
+	if (unlikely(ip_fast_csum((u8 *)nh, nh->ihl))) {
+		printk(KERN_WARNING "IPO csum=%hu csum_error %hu\n", nh->check, ip_fast_csum((u8 *)nh, nh->ihl));
 		goto drop;
 	}
 
@@ -278,7 +293,7 @@ static int ipo_rx(struct sk_buff *skb)
 
 //	skb_scrub_packet(skb, false);
 	printk(KERN_INFO "IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
-	printk(KERN_INFO "s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d, csum %hu\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl, ip_fast_csum((u8 *)&nh, nh->ihl));
+	printk(KERN_INFO "s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
 //	gro_cells_receive(&ipon->ipo_dev->gro_cells, skb);
 	return 0;
 drop:
@@ -353,7 +368,12 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		printk(KERN_INFO "IPO rt.dst %pI4\n", &rt->rt_gateway);
 		dst = rt->rt_gateway;
 		printiphdr("IPO ipo_xmit ori: ", skb_network_header(skb), ntohs(nh->tot_len));
-		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+		printk(KERN_INFO "head %p, tail %d, "
+			   "data %p, end %d, len %u, headroom %d, "
+			   "mac %d, network %d, transport %d, ip payload len %d\n",
+			   skb->head, skb->tail,
+			   skb->data, skb->end, skb->len, skb_headroom(skb),
+			   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 		if (skb_mac_header_was_set(skb)) {
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
 			skb->mac_header = ~0;
