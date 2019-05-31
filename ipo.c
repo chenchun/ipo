@@ -153,9 +153,10 @@ static int ipo_rx(struct sk_buff *skb)
 	char *pchar;
 	struct net_device *dev = skb->dev;
 	int len;
-//	struct net *net = dev_net(dev);
+	struct pcpu_dstats *dstats;
+	struct net *net = dev_net(dev);
 //	const struct iphdr *iph = ip_hdr(skb);
-//	struct ipo_net *ipon = net_generic(net, ipo_net_id);
+	struct ipo_net *ipon = net_generic(net, ipo_net_id);
 //	if (iptunnel_pull_header(skb, 0, htons(ETH_P_IP), false)) {
 //		goto drop;
 //	}
@@ -270,10 +271,10 @@ static int ipo_rx(struct sk_buff *skb)
 	}
 
 	skb_scrub_packet(skb, true);
-	err = netif_rx(skb);
-	if (err != 0) {
-		goto drop;
-	}
+//	err = netif_rx(skb);
+//	if (err != 0) {
+//		goto drop;
+//	}
 //	err = IP_ECN_decapsulate(iph, skb);
 //	if (unlikely(err)) {
 ////		net_info_ratelimited("non-ECT from %pI4 with TOS=%#x\n",
@@ -286,15 +287,15 @@ static int ipo_rx(struct sk_buff *skb)
 //		}
 //	}
 
-//	tstats = this_cpu_ptr(tunnel->dev->tstats);
-//	u64_stats_update_begin(&tstats->syncp);
-//	tstats->rx_packets++;
-//	tstats->rx_bytes += skb->len;
-//	u64_stats_update_end(&tstats->syncp);
+	dstats = this_cpu_ptr(dev->dstats);
+	u64_stats_update_begin(&dstats->syncp);
+	dstats->rx_packets++;
+	dstats->rx_bytes += skb->len;
+	u64_stats_update_end(&dstats->syncp);
 
 	printk(KERN_INFO "IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
 	printk(KERN_INFO "s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
-//	gro_cells_receive(&ipon->ipo_dev->gro_cells, skb);
+	gro_cells_receive(&ipon->ipo_dev->gro_cells, skb);
 	return 0;
 drop:
 	printk(KERN_WARNING "IPO rx_error\n");
