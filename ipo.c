@@ -269,6 +269,7 @@ static int ipo_rx(struct sk_buff *skb)
 		goto drop;
 	}
 
+	skb_scrub_packet(skb, true);
 	err = netif_rx(skb);
 	if (err != 0) {
 		goto drop;
@@ -291,7 +292,6 @@ static int ipo_rx(struct sk_buff *skb)
 //	tstats->rx_bytes += skb->len;
 //	u64_stats_update_end(&tstats->syncp);
 
-//	skb_scrub_packet(skb, false);
 	printk(KERN_INFO "IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
 	printk(KERN_INFO "s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
 //	gro_cells_receive(&ipon->ipo_dev->gro_cells, skb);
