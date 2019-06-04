@@ -37,6 +37,7 @@ netstat -s
 IPReversePathFilter: 8
 
 for i in /proc/sys/net/ipv4/conf/*/rp_filter ; do echo 0 > $i ; done
+sysctl -w net.ipv4.ip_forward=1
 
 
 

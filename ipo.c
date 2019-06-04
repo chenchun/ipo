@@ -161,7 +161,6 @@ static int ipo_rx(struct sk_buff *skb)
 //		goto drop;
 //	}
 	nh = (struct iphdr *)skb_network_header(skb);
-	printk(KERN_WARNING "IPO skb->len %u 0.2\n", skb->len);
 	printk(KERN_INFO "head %p, tail %d, "
 				  "data %p, end %d, len %u, headroom %d, "
 	  "mac %d, network %d, transport %d, ip payload len %d\n",
@@ -180,7 +179,6 @@ static int ipo_rx(struct sk_buff *skb)
 //#endif
 //		skb_pull(skb, ETH_HLEN);
 //	}
-	printk(KERN_WARNING "IPO skb->len %u 0.1\n", skb->len);
 //	skb->ip_summed = CHECKSUM_UNNECESSARY;
 //	printiphdr("IPO ipo_rx: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 	// TODO delete options?
@@ -199,7 +197,6 @@ static int ipo_rx(struct sk_buff *skb)
 //		goto rx_error;
 //	}
 //	printk(KERN_INFO "IPO ipo_rx rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
-	printk(KERN_WARNING "IPO skb->len %u 0.0\n", skb->len);
 	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
 	if (nh->saddr == in_aton("10.0.0.2")) {
 		pchar = (char*)&nh->saddr;
@@ -223,10 +220,9 @@ static int ipo_rx(struct sk_buff *skb)
 		pchar[6] = 1;
 		pchar[7] = optdata->dst;
 	}
-	printk(KERN_WARNING "IPO skb->len %u 0\n", skb->len);
 	ip_send_check(nh);
 	// push back IP hdr
-	skb_push_rcsum(skb, sizeof(struct iphdr) + overhead);
+	skb_push(skb, sizeof(struct iphdr) + overhead);
 //	printmachdr("IPO ipo_rx mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 //	skb_reset_mac_header(skb);
 //	skb->protocol = eth_type_trans(skb, dev);
@@ -236,39 +232,39 @@ static int ipo_rx(struct sk_buff *skb)
 //	skb_reset_mac_header(skb);
 //	skb_scrub_packet(skb, false);
 //	skb_postpull_rcsum(skb, eth_hdr(skb), ETH_HLEN);
-	if (skb->pkt_type == PACKET_OTHERHOST)
-		goto drop;
-	printk(KERN_WARNING "IPO skb->len %u 1\n", skb->len);
-	if (!pskb_may_pull(skb, sizeof(struct iphdr)))
-		goto drop;
-	printk(KERN_WARNING "IPO skb->len %u 2\n", skb->len);
-	if (!pskb_may_pull(skb, nh->ihl*4)) {
-		printk(KERN_WARNING "IPO pskb_may_pull fail\n");
-		goto drop;
-	}
-	printk(KERN_WARNING "IPO skb->len %u 3\n", skb->len);
-	if (nh->ihl < 5 || nh->version != 4) {
-		printk(KERN_WARNING "IPO pskb_may_pull fail\n");
-		goto drop;
-	}
-	printk(KERN_INFO "head %p, tail %d, "
-		   "data %p, end %d, len %u, headroom %d, "
-		   "mac %d, network %d, transport %d, ip payload len %d\n",
-		   skb->head, skb->tail,
-		   skb->data, skb->end, skb->len, skb_headroom(skb),
-		   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
-	len = ntohs(nh->tot_len);
-	if (skb->len < len) {
-		printk(KERN_WARNING "IPO IPSTATS_MIB_INTRUNCATEDPKTS skb->len %u len %d fail\n", skb->len, len);
-		goto drop;
-	} else if (len < (nh->ihl*4)) {
-		printk(KERN_WARNING "IPO ihl fail\n");
-		goto drop;
-	}
-	if (unlikely(ip_fast_csum((u8 *)nh, nh->ihl))) {
-		printk(KERN_WARNING "IPO csum=%hu csum_error %hu\n", nh->check, ip_fast_csum((u8 *)nh, nh->ihl));
-		goto drop;
-	}
+//	if (skb->pkt_type == PACKET_OTHERHOST)
+//		goto drop;
+//	printk(KERN_WARNING "IPO skb->len %u 1\n", skb->len);
+//	if (!pskb_may_pull(skb, sizeof(struct iphdr)))
+//		goto drop;
+//	printk(KERN_WARNING "IPO skb->len %u 2\n", skb->len);
+//	if (!pskb_may_pull(skb, nh->ihl*4)) {
+//		printk(KERN_WARNING "IPO pskb_may_pull fail\n");
+//		goto drop;
+//	}
+//	printk(KERN_WARNING "IPO skb->len %u 3\n", skb->len);
+//	if (nh->ihl < 5 || nh->version != 4) {
+//		printk(KERN_WARNING "IPO pskb_may_pull fail\n");
+//		goto drop;
+//	}
+//	printk(KERN_INFO "head %p, tail %d, "
+//		   "data %p, end %d, len %u, headroom %d, "
+//		   "mac %d, network %d, transport %d, ip payload len %d\n",
+//		   skb->head, skb->tail,
+//		   skb->data, skb->end, skb->len, skb_headroom(skb),
+//		   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+//	len = ntohs(nh->tot_len);
+//	if (skb->len < len) {
+//		printk(KERN_WARNING "IPO IPSTATS_MIB_INTRUNCATEDPKTS skb->len %u len %d fail\n", skb->len, len);
+//		goto drop;
+//	} else if (len < (nh->ihl*4)) {
+//		printk(KERN_WARNING "IPO ihl fail\n");
+//		goto drop;
+//	}
+//	if (unlikely(ip_fast_csum((u8 *)nh, nh->ihl))) {
+//		printk(KERN_WARNING "IPO csum=%hu csum_error %hu\n", nh->check, ip_fast_csum((u8 *)nh, nh->ihl));
+//		goto drop;
+//	}
 
 	skb_scrub_packet(skb, true);
 //	err = netif_rx(skb);
@@ -287,11 +283,11 @@ static int ipo_rx(struct sk_buff *skb)
 //		}
 //	}
 
-	dstats = this_cpu_ptr(dev->dstats);
-	u64_stats_update_begin(&dstats->syncp);
-	dstats->rx_packets++;
-	dstats->rx_bytes += skb->len;
-	u64_stats_update_end(&dstats->syncp);
+//	dstats = this_cpu_ptr(dev->dstats);
+//	u64_stats_update_begin(&dstats->syncp);
+//	dstats->rx_packets++;
+//	dstats->rx_bytes += skb->len;
+//	u64_stats_update_end(&dstats->syncp);
 
 	printk(KERN_INFO "IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
 	printk(KERN_INFO "s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
@@ -349,7 +345,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct rtable *rt;
 	__be32 dst;
 	nh = (struct iphdr *)skb_network_header(skb);
-	printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
+//	printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 	if (ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP) {
 		printk(KERN_WARNING "Proto not ETH_P_IP");
 //		goto tx_error;
@@ -383,10 +379,10 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 #endif
 			skb_pull(skb, sizeof(struct ethhdr));
 		}
+		memcpy(skb_network_header(skb) - overhead, skb_network_header(skb), sizeof(struct iphdr));
 		skb_set_network_header(skb, skb_network_offset(skb)-overhead);
 		skb_push(skb, overhead);
 		// copy ip headers ahead
-		memcpy(skb_network_header(skb) - overhead, skb_network_header(skb), sizeof(struct iphdr));
 		nh = (struct iphdr *)skb_network_header(skb);
 		nh->ihl += overhead/4;
 		nh->tot_len = htons(ntohs(nh->tot_len) + overhead);
@@ -397,6 +393,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		opthdr->type = 40;
 		opthdr->len = overhead;
 		optdata = (struct optdata *)((char *)opthdr + sizeof(struct opthdr));
+		printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
 		// save last byte of src ip to opt src
 		optdata->src = charp[15];
 		optdata->dst = charp[19];
