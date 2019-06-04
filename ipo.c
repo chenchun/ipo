@@ -138,6 +138,8 @@ static void ipo_get_stats64(struct net_device *dev,
 	}
 }
 
+const int IPPROTO_IPO_ADDITION = 143;
+
 // Check include/linux/netdevice.h for enum rx_handler_result
 static int ipo_rx(struct sk_buff *skb)
 {
@@ -159,7 +161,7 @@ static int ipo_rx(struct sk_buff *skb)
 	printk(KERN_INFO "IPO ipo_rx dev %s saddr %pI4, daddr %pI4, skb.proto %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d, nh->version %d, ntohs(nh->tot_len)=%d, nh->ihl*4=%d, nh->ttl=%d\n", dev->name, &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
 	// TODO delete options?
 	// TODO how to restore protocol
-	nh->protocol = IPPROTO_ICMP;
+	nh->protocol -= IPPROTO_IPO_ADDITION;
 	// TODO search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
 	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
 	if (nh->saddr == in_aton("10.0.0.2")) {
@@ -216,8 +218,6 @@ drop:
 static void ipo_err(struct sk_buff *skb, u32 info) {
 	printk(KERN_WARNING "IPO ipo_err\n");
 }
-
-const int IPPROTO_IPO = 143;
 
 static const struct net_protocol net_ipo_protocol = {
 	.handler     = ipo_rx,
@@ -297,7 +297,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		nh = (struct iphdr *)skb_network_header(skb);
 		nh->ihl += overhead/4;
 		nh->tot_len = htons(ntohs(nh->tot_len) + overhead);
-		nh->protocol = IPPROTO_IPO;
+		nh->protocol += IPPROTO_IPO_ADDITION;
 
 		charp = skb_network_header(skb);
 		opthdr = (struct opthdr *)(charp + sizeof(struct iphdr));
@@ -448,12 +448,17 @@ static struct rtnl_link_ops ipo_link_ops __read_mostly = {
 	.priv_size	= sizeof(struct ipo_dev),
 };
 
+int supportedProtocol[3] = {IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP};
+
 static int __init ipo_init_module(void)
 {
 	int err = 0;
-	if (inet_add_protocol(&net_ipo_protocol, IPPROTO_IPO) < 0) {
-		pr_err("can't add protocol\n");
-		return -EAGAIN;
+	int i = 0;
+	for (; i < sizeof(supportedProtocol)/sizeof(int); i++) {
+		if (inet_add_protocol(&net_ipo_protocol, IPPROTO_IPO_ADDITION + supportedProtocol[i]) < 0) {
+			pr_err("can't add protocol\n");
+			return -EAGAIN;
+		}
 	}
 	err = register_pernet_device(&ipo_net_ops);
 	if (err < 0)
@@ -470,8 +475,11 @@ static int __init ipo_init_module(void)
 
 static void __exit ipo_cleanup_module(void)
 {
+	int i = 0;
 	rtnl_link_unregister(&ipo_link_ops);
-	inet_del_protocol(&net_ipo_protocol, IPPROTO_IPO);
+	for (; i < sizeof(supportedProtocol)/sizeof(int); i++) {
+		inet_del_protocol(&net_ipo_protocol, IPPROTO_IPO_ADDITION + supportedProtocol[i]);
+	}
 	unregister_pernet_device(&ipo_net_ops);
 	printk(KERN_INFO "IPO uninstalled\n");
 }
