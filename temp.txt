@@ -197,3 +197,16 @@ Tracing "ipip_rcv"... Ctrl-C to end.
   0)   0.142 us    |      __raise_softirq_irqoff();
   0)   1.275 us    |    }
   0) + 94.297 us   |  }
+
+
+rmmod ipo; make clean; make && insmod ipo.ko && ./createcontainer.sh && ./init.sh
+tcpdump -vvnneSs 0 -i any "ip[9]==144" or icmp
+
+sysctl -w net.ipv4.conf.all.rp_filter=0
+sysctl -w net.ipv4.conf.default.rp_filter=0
+sysctl -w net.ipv4.conf.eth1.rp_filter=0
+sysctl -w net.ipv4.conf.ipo0.rp_filter=0
+sysctl -w net.ipv4.conf.v2.rp_filter=0
+
+ip link del docker0
+ip netns exec ctn ping -c 1 192.168.2.3
