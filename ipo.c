@@ -61,23 +61,6 @@ static struct pernet_operations ipo_net_ops = {
 
 const unsigned short overhead = sizeof(struct opthdr) + sizeof(struct optdata);
 
-void printmachdr(const char *pre, char *p, uint32_t len) {
-	uint32_t i;
-	if (len > 100) {
-		len = 100;
-	}
-	printk(KERN_INFO);
-	printk(pre);
-	for (i = 0; i < len; i++) {
-		if (i == 26 || i == 34 || i == 14) {
-			printk("  ");
-		}
-		printk("%02hhx ", *p);
-		p++;
-	}
-	printk("\n");
-}
-
 void printiphdr(const char *pre, char *p, uint32_t len) {
 	uint32_t i;
 	if (len > 100) {
@@ -159,9 +142,6 @@ static int ipo_rx(struct sk_buff *skb)
 		   skb->data, skb->end, skb->len, skb_headroom(skb),
 		   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 	printk(KERN_INFO "IPO ipo_rx dev %s saddr %pI4, daddr %pI4, skb.proto %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d, nh->version %d, ntohs(nh->tot_len)=%d, nh->ihl*4=%d, nh->ttl=%d\n", dev->name, &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
-	// TODO delete options?
-	// TODO how to restore protocol
-	nh->protocol -= IPPROTO_IPO_ADDITION;
 	// TODO search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
 	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
 	if (nh->saddr == in_aton("10.0.0.2")) {
@@ -186,10 +166,17 @@ static int ipo_rx(struct sk_buff *skb)
 		pchar[6] = 1;
 		pchar[7] = optdata->dst;
 	}
+	printiphdr("IPO ipo_rx decode 1: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+	memmove(skb_network_header(skb) + overhead, skb_network_header(skb), sizeof(struct iphdr));
+	skb_set_network_header(skb, skb_network_offset(skb)+overhead);
+	nh = (struct iphdr *)skb_network_header(skb);
+	nh->ihl -= overhead/4;
+	nh->tot_len = htons(ntohs(nh->tot_len) - overhead);
+	nh->protocol -= IPPROTO_IPO_ADDITION;
 	ip_send_check(nh);
 	// push back IP hdr
-	skb_push(skb, sizeof(struct iphdr) + overhead);
-	printiphdr("IPO ipo_rx decode: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+	skb_push(skb, sizeof(struct iphdr));
+	printiphdr("IPO ipo_rx decode 2: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 	skb_scrub_packet(skb, true);
 //	err = netif_rx(skb);
 //	if (err != 0) {
