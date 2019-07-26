@@ -148,28 +148,24 @@ static int ipo_rx(struct sk_buff *skb)
 	pr_debug("IPO ipo_rx dev %s saddr %pI4, daddr %pI4, skb->protocol %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d, nh->version %d, ntohs(nh->tot_len)=%d, nh->ihl*4=%d, nh->ttl=%d\n", dev->name, &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
 	// TODO search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
 	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
+	pchar = (char*)&nh->saddr;
 	if (nh->saddr == in_aton("10.0.0.2")) {
-		pchar = (char*)&nh->saddr;
 		pchar[0] = 192;
 		pchar[1] = 168;
 		pchar[2] = 1;
-		pchar[3] = optdata->src;
-		pchar[4] = 192;
-		pchar[5] = 168;
-		pchar[6] = 2;
-		pchar[7] = optdata->dst;
 
 	} else if (nh->saddr == in_aton("10.0.0.3")) {
-		pchar = (char*)&nh->saddr;
 		pchar[0] = 192;
 		pchar[1] = 168;
 		pchar[2] = 2;
-		pchar[3] = optdata->src;
-		pchar[4] = 192;
-		pchar[5] = 168;
-		pchar[6] = 1;
-		pchar[7] = optdata->dst;
 	}
+	for_primary_ifa(ipo->dev->ip_ptr) {
+		nh->daddr = ifa->ifa_local;
+			break;
+	} endfor_ifa(ipo->dev);
+	pchar[3] = optdata->src;
+	pchar[7] = optdata->dst;
+
 	memmove(skb_network_header(skb) + overhead, skb_network_header(skb), sizeof(struct iphdr));
 	skb_set_network_header(skb, skb_network_offset(skb)+overhead);
 	nh = (struct iphdr *)skb_network_header(skb);
