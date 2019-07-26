@@ -13,6 +13,7 @@
 #include <linux/inet.h>
 #include <linux/inetdevice.h>
 
+#include <net/icmp.h>
 #include <net/ip_tunnels.h>
 #include <net/rtnetlink.h>
 #include <net/dst.h>
@@ -187,12 +188,12 @@ static int ipo_rx(struct sk_buff *skb)
 	u64_stats_update_end(&tstats->syncp);
 
 //	printiphdr("IPO ipo_rx decode 2: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+	skb->dev = ipo->dev; //TODO what does this do?
 	skb_scrub_packet(skb, true);
 //	err = netif_rx(skb);
 //	if (err != 0) {
 //		goto drop;
 //	}
-	skb->dev = ipo->dev; //TODO what does this do?
 
 	pr_debug("IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
 	pr_debug("IPO ipo_rx s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
@@ -248,6 +249,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct flowi4 fl4;
 	struct rtable *rt;
 	__be32 dst;
+	int mtu;
 	nh = (struct iphdr *)skb_network_header(skb);
 //	printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 	if (ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP) {
@@ -320,6 +322,19 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 			dev->stats.collisions++;
 			goto tx_error;
 		}
+
+		mtu = skb_dst(skb)? dst_mtu(skb_dst(skb)) : dev->mtu;
+		if (skb_dst(skb))
+			skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
+
+		if (!skb_is_gso(skb) &&
+			(nh->frag_off&htons(IP_DF)) &&
+			mtu < ntohs(nh->tot_len)) {
+			icmp_send(skb, ICMP_DEST_UNREACH, ICMP_FRAG_NEEDED, htonl(mtu));
+			ip_rt_put(rt);
+			goto tx_error;
+		}
+
 		nh->saddr = inet_select_addr(rt->dst.dev, rt_nexthop(rt, nh->daddr), RT_SCOPE_UNIVERSE);
 //		printk(KERN_INFO "IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
 //		nh->saddr = rt->rt_gateway;
@@ -402,7 +417,6 @@ static const struct net_device_ops ipo_netdev_ops = {
 #define IPO_FEATURES (NETIF_F_SG |		\
 		       NETIF_F_FRAGLIST |	\
 		       NETIF_F_HIGHDMA |	\
-		       NETIF_F_GSO_SOFTWARE |	\
 		       NETIF_F_HW_CSUM |	\
 			   NETIF_F_RXCSUM)
 
@@ -413,6 +427,7 @@ static void ipo_setup(struct net_device *dev)
 
 	dev->type		= ARPHRD_TUNNEL;
 	dev->flags		= IFF_NOARP;
+	dev->iflink		= 0;
 	dev->addr_len		= 4;
 	dev->features		|= NETIF_F_LLTX;
 	netif_keep_dst(dev);

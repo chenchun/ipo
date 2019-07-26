@@ -284,3 +284,5 @@ sysctl -w net.ipv4.conf.v2.rp_filter=0
 
 ip link del docker0
 ip netns exec ctn ping -c 1 192.168.2.3
+ip netns exec ctn iperf3 -c 192.168.2.2 -b 2000M
+ip netns exec ctn iperf3 -c 192.168.2.2 -u -b 2000M
