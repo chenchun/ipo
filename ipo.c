@@ -10,8 +10,8 @@
 #include <linux/if_ether.h>
 #include <linux/skbuff.h>
 #include <linux/if_tunnel.h>
-#include<linux/inet.h>
-#include<linux/inetdevice.h>
+#include <linux/inet.h>
+#include <linux/inetdevice.h>
 
 #include <net/ip_tunnels.h>
 #include <net/rtnetlink.h>
@@ -35,6 +35,7 @@ struct optdata {
 
 struct ipo_dev {
 	struct gro_cells	gro_cells;
+	struct net_device	*dev;
 };
 
 struct ipo_net {
@@ -61,6 +62,7 @@ static struct pernet_operations ipo_net_ops = {
 
 const unsigned short overhead = sizeof(struct opthdr) + sizeof(struct optdata);
 
+#if defined(CONFIG_DYNAMIC_DEBUG) || defined(DEBUG)
 void printiphdr(const char *pre, char *p, uint32_t len) {
 	uint32_t i;
 	if (len > 100) {
@@ -77,8 +79,11 @@ void printiphdr(const char *pre, char *p, uint32_t len) {
 	}
 	printk("\n");
 }
+#else
+void printiphdr(const char *pre, char *p, uint32_t len) {}
+#endif
 
-static inline struct rtable *ip_route_output_ipo(struct net *net,
+	static inline struct rtable *ip_route_output_ipo(struct net *net,
 													struct flowi4 *fl4,
 													int proto,
 													__be32 daddr, __be32 saddr,
@@ -94,30 +99,28 @@ static inline struct rtable *ip_route_output_ipo(struct net *net,
 	return ip_route_output_key(net, fl4);
 }
 
-struct pcpu_dstats {
-	u64			tx_packets;
-	u64			tx_bytes;
-	struct u64_stats_sync	syncp;
-};
-
 static void ipo_get_stats64(struct net_device *dev,
 												   struct rtnl_link_stats64 *stats)
 {
 	int i;
 
 	for_each_possible_cpu(i) {
-		const struct pcpu_dstats *dstats;
-		u64 tbytes, tpackets;
+		const struct pcpu_sw_netstats *tstats;
+		u64 tbytes, tpackets, rbytes, rpackets;
 		unsigned int start;
 
-		dstats = per_cpu_ptr(dev->dstats, i);
+		tstats = per_cpu_ptr(dev->tstats, i);
 		do {
-			start = u64_stats_fetch_begin_irq(&dstats->syncp);
-			tbytes = dstats->tx_bytes;
-			tpackets = dstats->tx_packets;
-		} while (u64_stats_fetch_retry_irq(&dstats->syncp, start));
+			start = u64_stats_fetch_begin_irq(&tstats->syncp);
+			tbytes = tstats->tx_bytes;
+			tpackets = tstats->tx_packets;
+			rbytes = tstats->rx_bytes;
+			rpackets = tstats->rx_packets;
+		} while (u64_stats_fetch_retry_irq(&tstats->syncp, start));
 		stats->tx_bytes += tbytes;
 		stats->tx_packets += tpackets;
+		stats->rx_bytes += rbytes;
+		stats->rx_packets += rpackets;
 	}
 }
 
@@ -131,17 +134,17 @@ static int ipo_rx(struct sk_buff *skb)
 	int err;
 	char *pchar;
 	struct net_device *dev = skb->dev;
-//	struct pcpu_dstats *dstats;
+	struct pcpu_sw_netstats *tstats;
 	struct net *net = dev_net(dev);
-	struct ipo_net *ipon = net_generic(net, ipo_net_id);
+	struct ipo_dev *ipo = ((struct ipo_net *) net_generic(net, ipo_net_id))->ipo_dev;
 	nh = (struct iphdr *)skb_network_header(skb);
-	printk(KERN_INFO "head %p, tail %d, "
+	pr_debug("IPO ipo_rx head %p, tail %d, "
 				  "data %p, end %d, len %u, headroom %d, "
 	  "mac %d, network %d, transport %d, ip payload len %d\n",
 		   skb->head, skb->tail,
 		   skb->data, skb->end, skb->len, skb_headroom(skb),
 		   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
-	printk(KERN_INFO "IPO ipo_rx dev %s saddr %pI4, daddr %pI4, skb.proto %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d, nh->version %d, ntohs(nh->tot_len)=%d, nh->ihl*4=%d, nh->ttl=%d\n", dev->name, &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
+	pr_debug("IPO ipo_rx dev %s saddr %pI4, daddr %pI4, skb->protocol %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d, nh->version %d, ntohs(nh->tot_len)=%d, nh->ihl*4=%d, nh->ttl=%d\n", dev->name, &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
 	// TODO search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
 	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
 	if (nh->saddr == in_aton("10.0.0.2")) {
@@ -166,7 +169,7 @@ static int ipo_rx(struct sk_buff *skb)
 		pchar[6] = 1;
 		pchar[7] = optdata->dst;
 	}
-	printiphdr("IPO ipo_rx decode 1: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+//	printiphdr("IPO ipo_rx decode 1: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 	memmove(skb_network_header(skb) + overhead, skb_network_header(skb), sizeof(struct iphdr));
 	skb_set_network_header(skb, skb_network_offset(skb)+overhead);
 	nh = (struct iphdr *)skb_network_header(skb);
@@ -176,21 +179,24 @@ static int ipo_rx(struct sk_buff *skb)
 	ip_send_check(nh);
 	// push back IP hdr
 	skb_push(skb, sizeof(struct iphdr));
-	printiphdr("IPO ipo_rx decode 2: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+
+	tstats = this_cpu_ptr(ipo->dev->tstats);
+	u64_stats_update_begin(&tstats->syncp);
+	tstats->rx_packets++;
+	tstats->rx_bytes += skb->len;
+	u64_stats_update_end(&tstats->syncp);
+
+//	printiphdr("IPO ipo_rx decode 2: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 	skb_scrub_packet(skb, true);
 //	err = netif_rx(skb);
 //	if (err != 0) {
 //		goto drop;
 //	}
-//	dstats = this_cpu_ptr(dev->dstats);
-//	u64_stats_update_begin(&dstats->syncp);
-//	dstats->rx_packets++;
-//	dstats->rx_bytes += skb->len;
-//	u64_stats_update_end(&dstats->syncp);
+	skb->dev = ipo->dev; //TODO what does this do?
 
-	printk(KERN_INFO "IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
-	printk(KERN_INFO "s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
-	err = gro_cells_receive(&ipon->ipo_dev->gro_cells, skb);
+	pr_debug("IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
+	pr_debug("IPO ipo_rx s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
+	err = gro_cells_receive(&ipo->gro_cells, skb);
 	if (err != 0) {
 		printk(KERN_WARNING "IPO gro_cells_receive fail\n");
 		goto drop;
@@ -217,16 +223,16 @@ static inline void iptunnel_xmit_ipo(struct sk_buff *skb, struct net_device *dev
 {
 	int err;
 	int pkt_len = skb->len - skb_transport_offset(skb);
-	struct pcpu_dstats *dstats = this_cpu_ptr(dev->dstats);
+	struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
 
 	nf_reset(skb);
 
 	err = ip_local_out(skb);
 	if (likely(net_xmit_eval(err) == 0)) {
-		u64_stats_update_begin(&dstats->syncp);
-		dstats->tx_bytes += pkt_len;
-		dstats->tx_packets++;
-		u64_stats_update_end(&dstats->syncp);
+		u64_stats_update_begin(&tstats->syncp);
+		tstats->tx_bytes += pkt_len;
+		tstats->tx_packets++;
+		u64_stats_update_end(&tstats->syncp);
 	} else {
 		dev->stats.tx_errors++;
 		dev->stats.tx_aborted_errors++;
@@ -260,10 +266,10 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 			printk(KERN_WARNING "IPO skb_rtable is null\n");
 			goto tx_error;
 		}
-		printk(KERN_INFO "IPO rt.dst %pI4\n", &rt->rt_gateway);
+		pr_debug("IPO rt.dst %pI4\n", &rt->rt_gateway);
 		dst = rt->rt_gateway;
-		printiphdr("IPO ipo_xmit ori: ", skb_network_header(skb), ntohs(nh->tot_len));
-		printk(KERN_INFO "head %p, tail %d, "
+//		printiphdr("IPO ipo_xmit ori: ", skb_network_header(skb), ntohs(nh->tot_len));
+		pr_debug("IPO ipo_xmit head %p, tail %d, "
 			   "data %p, end %d, len %u, headroom %d, "
 			   "mac %d, network %d, transport %d, ip payload len %d\n",
 			   skb->head, skb->tail,
@@ -291,7 +297,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		opthdr->type = 40;
 		opthdr->len = overhead;
 		optdata = (struct optdata *)((char *)opthdr + sizeof(struct opthdr));
-		printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
+//		printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
 		// save last byte of src ip to opt src
 		optdata->src = charp[15];
 		optdata->dst = charp[19];
@@ -319,13 +325,13 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 //		nh->saddr = rt->rt_gateway;
 		skb_dst_drop(skb);
 		skb_dst_set(skb, &rt->dst);
-		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
-		printk(KERN_INFO "head %p, data %p, tail %d, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d\n", skb->head, skb->data, skb->tail, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+//		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
+		pr_debug("IPO ipo_xmit head %p, tail %d, data %p, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d, skb->protocol %d\n", skb->head, skb->tail, skb->data, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len), skb->protocol);
 		iptunnel_xmit_ipo(skb, dev);
 	} else {
 		// TODO
 	}
-	printk(KERN_INFO "IPO tx_ok\n");
+//	printk(KERN_INFO "IPO tx_ok\n");
 	return NETDEV_TX_OK;
 tx_error:
 	printk(KERN_WARNING "IPO tx_error\n");
@@ -354,15 +360,16 @@ static int ipo_dev_init(struct net_device *dev)
 	struct ipo_dev *ipo = netdev_priv(dev);
 	int err;
 	printk(KERN_INFO "IPO ipo_dev_init %s", dev->name);
-	dev->dstats = alloc_percpu(struct pcpu_dstats);
-	if (!dev->dstats)
+	ipo->dev = dev;
+	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
+	if (!dev->tstats)
 		return -ENOMEM;
 	// preserve headroom for option fields.
 	// It seems needed_headroom multiples by 4
 	dev->needed_headroom = overhead;
 	err = gro_cells_init(&ipo->gro_cells, dev);
 	if (err) {
-		free_percpu(dev->dstats);
+		free_percpu(dev->tstats);
 		return err;
 	}
 	return 0;
@@ -372,7 +379,7 @@ static void ipo_dev_uninit(struct net_device *dev)
 {
 	struct ipo_dev *ipo = netdev_priv(dev);
 	gro_cells_destroy(&ipo->gro_cells);
-	free_percpu(dev->dstats);
+	free_percpu(dev->tstats);
 }
 
 static int ipo_change_carrier(struct net_device *dev, bool new_carrier)
