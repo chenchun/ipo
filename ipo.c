@@ -63,7 +63,7 @@ static struct pernet_operations ipo_net_ops = {
 
 const unsigned short overhead = sizeof(struct opthdr) + sizeof(struct optdata);
 
-#if defined(CONFIG_DYNAMIC_DEBUG) || defined(DEBUG)
+#if defined(DEBUG)
 void printiphdr(const char *pre, char *p, uint32_t len) {
 	uint32_t i;
 	if (len > 100) {
@@ -170,7 +170,6 @@ static int ipo_rx(struct sk_buff *skb)
 		pchar[6] = 1;
 		pchar[7] = optdata->dst;
 	}
-//	printiphdr("IPO ipo_rx decode 1: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 	memmove(skb_network_header(skb) + overhead, skb_network_header(skb), sizeof(struct iphdr));
 	skb_set_network_header(skb, skb_network_offset(skb)+overhead);
 	nh = (struct iphdr *)skb_network_header(skb);
@@ -187,13 +186,9 @@ static int ipo_rx(struct sk_buff *skb)
 	tstats->rx_bytes += skb->len;
 	u64_stats_update_end(&tstats->syncp);
 
-//	printiphdr("IPO ipo_rx decode 2: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
+	printiphdr("IPO ipo_rx decode: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 	skb->dev = ipo->dev; //TODO what does this do?
 	skb_scrub_packet(skb, true);
-//	err = netif_rx(skb);
-//	if (err != 0) {
-//		goto drop;
-//	}
 
 	pr_debug("IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
 	pr_debug("IPO ipo_rx s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
@@ -251,18 +246,15 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	__be32 dst;
 	int mtu;
 	nh = (struct iphdr *)skb_network_header(skb);
-//	printmachdr("IPO ipo_xmit mac ori: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 	if (ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP) {
 		printk(KERN_WARNING "Proto not ETH_P_IP");
-//		goto tx_error;
+		goto tx_error;
 	}
 	if (unlikely(skb_headroom(skb) < overhead)) {
 		printk(KERN_WARNING "IPO headroom %d too small\n", skb_headroom(skb));
 		goto tx_error;
 	}
 	if (nh->ihl == 5) {
-//		if (!dev->rx_handler)
-//			printk(KERN_WARNING "IPO ipo_xmit rx handler should have registed");
 		rt = skb_rtable(skb);
 		if (rt == NULL) {
 			printk(KERN_WARNING "IPO skb_rtable is null\n");
@@ -270,7 +262,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		}
 		pr_debug("IPO rt.dst %pI4\n", &rt->rt_gateway);
 		dst = rt->rt_gateway;
-//		printiphdr("IPO ipo_xmit ori: ", skb_network_header(skb), ntohs(nh->tot_len));
+		printiphdr("IPO ipo_xmit original: ", skb_network_header(skb), ntohs(nh->tot_len));
 		pr_debug("IPO ipo_xmit head %p, tail %d, "
 			   "data %p, end %d, len %u, headroom %d, "
 			   "mac %d, network %d, transport %d, ip payload len %d\n",
@@ -299,13 +291,12 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		opthdr->type = 40;
 		opthdr->len = overhead;
 		optdata = (struct optdata *)((char *)opthdr + sizeof(struct opthdr));
-//		printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
+		printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
 		// save last byte of src ip to opt src
 		optdata->src = charp[15];
 		optdata->dst = charp[19];
 		nh->daddr = dst;
 		//TODO checksum ?
-//		printmachdr("IPO ipo_xmit mac new: ", skb_mac_header(skb), ntohs(nh->tot_len) + sizeof(struct ethhdr));
 		rt = ip_route_output_ipo(dev_net(dev), &fl4,
 									nh->protocol,
 									nh->daddr, 0,
@@ -336,17 +327,17 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		}
 
 		nh->saddr = inet_select_addr(rt->dst.dev, rt_nexthop(rt, nh->daddr), RT_SCOPE_UNIVERSE);
-//		printk(KERN_INFO "IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
+		pr_debug("IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
 //		nh->saddr = rt->rt_gateway;
 		skb_dst_drop(skb);
 		skb_dst_set(skb, &rt->dst);
-//		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
+		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
 		pr_debug("IPO ipo_xmit head %p, tail %d, data %p, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d, skb->protocol %d\n", skb->head, skb->tail, skb->data, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len), skb->protocol);
 		iptunnel_xmit_ipo(skb, dev);
 	} else {
 		// TODO
 	}
-//	printk(KERN_INFO "IPO tx_ok\n");
+	pr_debug(KERN_INFO "IPO tx_ok\n");
 	return NETDEV_TX_OK;
 tx_error:
 	printk(KERN_WARNING "IPO tx_error\n");
