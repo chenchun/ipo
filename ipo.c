@@ -252,12 +252,12 @@ int route_thread(void *data) {
 
 static void __net_exit ipo_exit_net(struct net *net)
 {
-	pr_info("IPO ipo_exit_net");
+	pr_debug("IPO ipo_exit_net");
 }
 
 static int __net_init ipo_init_net(struct net *net)
 {
-	pr_info("IPO ipo_init_net");
+	pr_debug("IPO ipo_init_net");
 	return 0;
 }
 
@@ -291,11 +291,8 @@ void printiphdr(const char *pre, char *p, uint32_t len) {
 void printiphdr(const char *pre, char *p, uint32_t len) {}
 #endif
 
-	static inline struct rtable *ip_route_output_ipo(struct net *net,
-													struct flowi4 *fl4,
-													int proto,
-													__be32 daddr, __be32 saddr,
-													__be32 key, __u8 tos, int oif)
+static inline struct rtable *ip_route_output_ipo(struct net *net, struct flowi4 *fl4,
+		int proto, __be32 daddr, __be32 saddr, __be32 key, __u8 tos, int oif)
 {
 	memset(fl4, 0, sizeof(*fl4));
 	fl4->flowi4_oif = oif;
@@ -307,8 +304,7 @@ void printiphdr(const char *pre, char *p, uint32_t len) {}
 	return ip_route_output_key(net, fl4);
 }
 
-static void ipo_get_stats64(struct net_device *dev,
-												   struct rtnl_link_stats64 *stats)
+static void ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
 {
 	int i;
 
@@ -388,10 +384,8 @@ static int ipo_rx(struct sk_buff *skb)
 		   skb->data, skb->end, skb->len, skb_headroom(skb),
 		   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 	pr_debug("IPO ipo_rx dev %s saddr %pI4, daddr %pI4, skb->protocol %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d, nh->version %d, ntohs(nh->tot_len)=%d, nh->ihl*4=%d, nh->ttl=%d\n", dev->name, &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
-	// TODO search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
+	// search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
 	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
-
-	pchar = (char*)&nh->saddr;
 	route = ipo_find_route(ipo, nh->saddr);
 	if (route == NULL) {
 		pr_warn("IPO ipo_rx route not found for %pI4\n", &nh->saddr);
@@ -399,14 +393,16 @@ static int ipo_rx(struct sk_buff *skb)
 	}
 	pr_debug("IPO ipo_rx find route for %pI4, dst %pI4\n", &nh->saddr, &route->dst);
 	nh->saddr = route->dst;
+	// get dst ip prefix from ipo dev ip
 	for_primary_ifa(ipo->dev->ip_ptr) {
 		nh->daddr = ifa->ifa_local;
-			break;
+		break;
 	} endfor_ifa(ipo->dev);
-
+	pchar = (char*)&nh->saddr;
 	pchar[3] = optdata->src;
 	pchar[7] = optdata->dst;
 
+	// move IP header behind
 	memmove(skb_network_header(skb) + overhead, skb_network_header(skb), sizeof(struct iphdr));
 	skb_set_network_header(skb, skb_network_offset(skb)+overhead);
 	nh = (struct iphdr *)skb_network_header(skb);
@@ -622,7 +618,6 @@ static int ipo_dev_init(struct net_device *dev)
 	struct ipo_net *ipon = net_generic(dev_net(dev), ipo_net_id);
 	int rc;
 	struct socket *sock;
-//	struct timeval tv;
 	struct sockaddr_nl nl_route_addr = {
 		.nl_family = AF_NETLINK,
 	};
