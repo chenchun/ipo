@@ -35,17 +35,89 @@ struct optdata {
 	char dst;
 };
 
+#define ROUTE_HASH_BITS	12
+#define ROUTE_HASH_SIZE	(1<<ROUTE_HASH_BITS)
+
 struct ipo_dev {
 	struct gro_cells	gro_cells;
 	struct net_device	*dev;
+	struct hlist_head	route_head[ROUTE_HASH_SIZE];
+	spinlock_t	  hash_lock;
 };
 
 struct ipo_net {
 	struct ipo_dev* ipo_dev;
-	struct sock	  *sk;	/* ROUTE raw socket */
+	struct sock *sk;	/* ROUTE raw socket */
 	struct task_struct *route_task;
 	unsigned char *recvbuf;
 };
+
+struct ipo_route {
+	struct hlist_node hlist;	/* linked list of entries */
+	struct rcu_head	  rcu;
+	__be32 gateway;
+	__be32 dst;
+};
+
+/* Hash chain to use given gateway address */
+static inline struct hlist_head *ipo_route_head(struct ipo_dev *ipo, __be32 gateway)
+{
+	return &ipo->route_head[hash_32(gateway, ROUTE_HASH_BITS)];
+}
+
+static struct ipo_route *ipo_find_route(struct ipo_dev *ipo,  const __be32 gateway)
+{
+	struct hlist_head *head = ipo_route_head(ipo, gateway);
+	struct ipo_route *f;
+
+	hlist_for_each_entry_rcu(f, head, hlist) {
+		if (gateway == f->gateway)
+			return f;
+	}
+	return NULL;
+}
+
+/* Add new entry to route table -- assumes lock held */
+static int ipo_route_add(struct ipo_dev *ipo, const __be32 gateway, __be32 dst)
+{
+	struct ipo_route *f;
+	pr_info("IPO add route gateway: %pI4, dst %pI4", &gateway, &dst);
+	f = ipo_find_route(ipo, gateway);
+	if (f) {
+		return -EEXIST;
+	}
+	f = kmalloc(sizeof(*f), GFP_ATOMIC);
+	if (!f)
+		return -ENOMEM;
+	hlist_add_head_rcu(&f->hlist, ipo_route_head(ipo, gateway));
+}
+
+static void ipo_route_free(struct rcu_head *head)
+{
+	struct ipo_route *f = container_of(head, struct ipo_route, rcu);
+	kfree(f);
+}
+
+static void ipo_route_destroy(struct ipo_dev *ipo, struct ipo_route *f)
+{
+	pr_info("IPO delete route %pI4", &f->gateway);
+	hlist_del_rcu(&f->hlist);
+	call_rcu(&f->rcu, ipo_route_free);
+}
+
+static int ipo_route_delete(struct ipo_dev *ipo, __be32 gateway)
+{
+	struct ipo_route *f;
+	int err = -ENOENT;
+	spin_lock_bh(&ipo->hash_lock);
+	f = ipo_find_route(ipo, gateway);
+	if (f) {
+		ipo_route_destroy(ipo, f);
+		err = 0;
+	}
+	spin_unlock_bh(&ipo->hash_lock);
+	return err;
+}
 
 static int ipo_net_id;
 
@@ -157,9 +229,14 @@ int route_thread(void *data) {
 					pr_warn("IPO receive error nlmsg");
 				}
 				rtm_to_fib_config(nh, &cfg);
-				pr_info("type %d, gateway %pI4, dst %pI4", nh->nlmsg_type, &cfg.fc_gw, &cfg.fc_dst);
+				if (nh->nlmsg_type == RTM_NEWROUTE) {
+					spin_lock_bh(&ipon->ipo_dev->hash_lock);
+					ipo_route_add(ipon->ipo_dev, cfg.fc_gw, cfg.fc_dst);
+					spin_unlock_bh(&ipon->ipo_dev->hash_lock);
+				} else if (nh->nlmsg_type == RTM_DELROUTE) {
+					ipo_route_delete(ipon->ipo_dev, cfg.fc_gw);
+				}
 			}
-			pr_info("IPO decode done");
 		} else {
 			schedule_timeout(msecs_to_jiffies(1000));
 		}
@@ -620,6 +697,8 @@ static const struct net_device_ops ipo_netdev_ops = {
 
 static void ipo_setup(struct net_device *dev)
 {
+	unsigned h;
+	struct ipo_dev *ipo = netdev_priv(dev);
 	ether_setup(dev);
 	dev->netdev_ops		= &ipo_netdev_ops;
 
@@ -633,6 +712,9 @@ static void ipo_setup(struct net_device *dev)
 	dev->features		|= IPO_FEATURES;
 	dev->hw_features	|= IPO_FEATURES;
 	eth_hw_addr_random(dev);
+	spin_lock_init(&ipo->hash_lock);
+	for (h = 0; h < ROUTE_HASH_SIZE; ++h)
+		INIT_HLIST_HEAD(&ipo->route_head[h]);
 }
 
 static int ipo_validate(struct nlattr *tb[], struct nlattr *data[])
