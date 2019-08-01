@@ -1,6 +1,6 @@
 rmmod ipo; make clean; make DEBUG=${DEBUG} && insmod ipo.ko
 
-ip netns del ctn
+ip netns del ctn 2> /dev/null || true
 ip=192.168.1.3
 if [ "$(hostname)" = "node1" ]; then
     ip=192.168.2.3
@@ -30,3 +30,11 @@ else
     #ip route add 192.168.1.0/24 via 10.0.0.2 dev eth1 || true
     ip r add 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink || true
 fi
+
+sysctl -w net.ipv4.ip_forward=1
+sysctl -w net.ipv4.conf.all.rp_filter=0
+sysctl -w net.ipv4.conf.default.rp_filter=0
+sysctl -w net.ipv4.conf.eth1.rp_filter=0
+sysctl -w net.ipv4.conf.ipo0.rp_filter=0
+sysctl -w net.ipv4.conf.v2.rp_filter=0
+ip link del docker0 2>/dev/null || true
