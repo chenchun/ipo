@@ -1,8 +1,12 @@
+node1=${node1-10.0.0.2}
+node2=${node2-10.0.0.3}
 rmmod ipo; make clean; make DEBUG=${DEBUG} && insmod ipo.ko
 
+ip a | grep ${node2} &> /dev/null
+is_node1=$?
 ip netns del ctn 2> /dev/null || true
 ip=192.168.1.3
-if [ "$(hostname)" = "node1" ]; then
+if [ $is_node1 -eq 0 ]; then
     ip=192.168.2.3
 fi
 ip netns add ctn
@@ -19,7 +23,7 @@ ip netns exec ctn ip n add 169.254.0.1 dev v1 lladdr `cat /sys/class/net/v2/addr
 ip route add $ip dev v2
 
 ip link add ipo0 type ipo
-if [ $(hostname) = 'master' ]; then
+if [ $is_node1 -eq 1 ]; then
     ip ad add 192.168.1.2/24 dev ipo0
     ip link set ipo0 up
     #ip route add 192.168.2.0/24 via 10.0.0.3 dev eth1 || true
