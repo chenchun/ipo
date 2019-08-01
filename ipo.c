@@ -24,6 +24,8 @@
 #include <net/ip.h>
 #include <net/gro_cells.h>
 
+// TODO multiple ipo devices ?
+
 // ip option header
 struct opthdr {
 	uint8_t type;
@@ -81,7 +83,6 @@ static struct ipo_route *ipo_find_route(struct ipo_dev *ipo,  const __be32 gatew
 static int ipo_route_add(struct ipo_dev *ipo, const __be32 gateway, __be32 dst)
 {
 	struct ipo_route *f;
-	pr_info("IPO add route gateway: %pI4, dst %pI4", &gateway, &dst);
 	f = ipo_find_route(ipo, gateway);
 	if (f) {
 		return -EEXIST;
@@ -89,7 +90,10 @@ static int ipo_route_add(struct ipo_dev *ipo, const __be32 gateway, __be32 dst)
 	f = kmalloc(sizeof(*f), GFP_ATOMIC);
 	if (!f)
 		return -ENOMEM;
+	f->dst = dst;
+	f->gateway = gateway;
 	hlist_add_head_rcu(&f->hlist, ipo_route_head(ipo, gateway));
+	pr_info("IPO add route gateway: %pI4, dst %pI4\n", &gateway, &dst);
 }
 
 static void ipo_route_free(struct rcu_head *head)
@@ -100,7 +104,7 @@ static void ipo_route_free(struct rcu_head *head)
 
 static void ipo_route_destroy(struct ipo_dev *ipo, struct ipo_route *f)
 {
-	pr_info("IPO delete route %pI4", &f->gateway);
+	pr_info("IPO delete route %pI4\n", &f->gateway);
 	hlist_del_rcu(&f->hlist);
 	call_rcu(&f->rcu, ipo_route_free);
 }
@@ -209,7 +213,7 @@ int route_thread(void *data) {
 	int recvlen = 0;
 	struct nlmsghdr *nh;
 	struct fib_config cfg;
-	pr_info("start route_thread");
+	pr_info("IPO start route_thread\n");
 	while (!kthread_should_stop()) {
 		ipon->sk->sk_allocation = GFP_NOIO | __GFP_MEMALLOC;
 		iov.iov_base = ipon->recvbuf;
@@ -230,6 +234,8 @@ int route_thread(void *data) {
 				}
 				rtm_to_fib_config(nh, &cfg);
 				if (nh->nlmsg_type == RTM_NEWROUTE) {
+					if (cfg.fc_gw == 0)
+						continue;
 					spin_lock_bh(&ipon->ipo_dev->hash_lock);
 					ipo_route_add(ipon->ipo_dev, cfg.fc_gw, cfg.fc_dst);
 					spin_unlock_bh(&ipon->ipo_dev->hash_lock);
@@ -373,6 +379,7 @@ static int ipo_rx(struct sk_buff *skb)
 	struct pcpu_sw_netstats *tstats;
 	struct net *net = dev_net(dev);
 	struct ipo_dev *ipo = ((struct ipo_net *) net_generic(net, ipo_net_id))->ipo_dev;
+	struct ipo_route *route;
 	nh = (struct iphdr *)skb_network_header(skb);
 	pr_debug("IPO ipo_rx head %p, tail %d, "
 				  "data %p, end %d, len %u, headroom %d, "
@@ -385,16 +392,13 @@ static int ipo_rx(struct sk_buff *skb)
 	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
 
 	pchar = (char*)&nh->saddr;
-	if (nh->saddr == in_aton("10.0.0.2")) {
-		pchar[0] = 192;
-		pchar[1] = 168;
-		pchar[2] = 1;
-
-	} else if (nh->saddr == in_aton("10.0.0.3")) {
-		pchar[0] = 192;
-		pchar[1] = 168;
-		pchar[2] = 2;
+	route = ipo_find_route(ipo, nh->saddr);
+	if (route == NULL) {
+		pr_warn("IPO ipo_rx route not found for %pI4\n", &nh->saddr);
+		goto drop;
 	}
+	pr_debug("IPO ipo_rx find route for %pI4, dst %pI4\n", &nh->saddr, &route->dst);
+	nh->saddr = route->dst;
 	for_primary_ifa(ipo->dev->ip_ptr) {
 		nh->daddr = ifa->ifa_local;
 			break;
