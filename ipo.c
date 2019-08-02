@@ -9,7 +9,6 @@
 #include <linux/percpu-defs.h>
 #include <linux/if_ether.h>
 #include <linux/skbuff.h>
-#include <linux/if_tunnel.h>
 #include <linux/inet.h>
 #include <linux/inetdevice.h>
 #include <linux/kthread.h>
@@ -23,8 +22,80 @@
 #include <net/ip_fib.h>
 #include <net/ip.h>
 #include <net/gro_cells.h>
+#include <net/netns/generic.h>
 
 // TODO multiple ipo devices ?
+
+static void __ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats);
+
+#ifndef PCPU_SW_NETSTATS
+typedef struct pcpu_tstats ipo_pcpu_tstats;
+#define ipo_u64_stats_fetch_begin(...) u64_stats_fetch_begin_bh(__VA_ARGS__)
+#define ipo_u64_stats_fetch_retry(...) u64_stats_fetch_retry_bh(__VA_ARGS__)
+#define ipo_alloc_pcpu_stats(...) alloc_percpu(__VA_ARGS__)
+/* This device needs to keep skb dst for qdisc enqueue or ndo_start_xmit() */
+static inline void netif_keep_dst(struct net_device *dev)
+{
+	dev->priv_flags	&= ~IFF_XMIT_DST_RELEASE;
+}
+
+/**
+ * skb_scrub_packet - scrub an skb
+ *
+ * @skb: buffer to clean
+ * @xnet: packet is crossing netns
+ *
+ * skb_scrub_packet can be used after encapsulating or decapsulting a packet
+ * into/from a tunnel. Some information have to be cleared during these
+ * operations.
+ * skb_scrub_packet can also be used to clean a skb before injecting it in
+ * another namespace (@xnet == true). We have to clear all information in the
+ * skb that could impact namespace isolation.
+ */
+void skb_scrub_packet(struct sk_buff *skb, bool xnet)
+{
+	skb->tstamp.tv64 = 0;
+	skb->pkt_type = PACKET_HOST;
+	skb->skb_iif = 0;
+	skb_dst_drop(skb);
+	secpath_reset(skb);
+	nf_reset(skb);
+	nf_reset_trace(skb);
+
+	if (!xnet)
+		return;
+
+	skb_orphan(skb);
+	skb->mark = 0;
+}
+
+static inline int ipo_gro_cells_receive(struct gro_cells *gcells, struct sk_buff *skb)
+{
+	gro_cells_receive(gcells, skb);
+	return 0;
+}
+
+struct rtnl_link_stats64 *ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
+{
+	__ipo_get_stats64(dev, stats);
+	return stats;
+}
+
+#else
+typedef struct pcpu_sw_netstats ipo_pcpu_tstats;
+#define ipo_u64_stats_fetch_begin(...) u64_stats_fetch_begin_irq(__VA_ARGS__)
+#define ipo_u64_stats_fetch_retry(...) u64_stats_fetch_retry_irq(__VA_ARGS__)
+#define ipo_alloc_pcpu_stats(...) netdev_alloc_pcpu_stats(__VA_ARGS__)
+static inline int ipo_gro_cells_receive(struct gro_cells *gcells, struct sk_buff *skb)
+{
+	return gro_cells_receive(gcells, skb);
+}
+
+static void ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
+{
+	__ipo_get_stats64(dev, stats);
+}
+#endif
 
 // ip option header
 struct opthdr {
@@ -94,6 +165,7 @@ static int ipo_route_add(struct ipo_dev *ipo, const __be32 gateway, __be32 dst)
 	f->gateway = gateway;
 	hlist_add_head_rcu(&f->hlist, ipo_route_head(ipo, gateway));
 	pr_info("IPO add route gateway: %pI4, dst %pI4\n", &gateway, &dst);
+	return 0;
 }
 
 static void ipo_route_free(struct rcu_head *head)
@@ -207,15 +279,15 @@ static int rtm_to_fib_config(struct nlmsghdr *nlh, struct fib_config *cfg)
 }
 
 int route_thread(void *data) {
+	int err;
 	struct ipo_net *ipon = (struct ipo_net *)data;
 	struct msghdr msg;
 	struct kvec iov;
 	int recvlen = 0;
 	struct nlmsghdr *nh;
 	struct fib_config cfg;
-	pr_info("IPO start route_thread\n");
+	pr_info("IPO route thread started\n");
 	while (!kthread_should_stop()) {
-		ipon->sk->sk_allocation = GFP_NOIO | __GFP_MEMALLOC;
 		iov.iov_base = ipon->recvbuf;
 		iov.iov_len = recvbuf_size;
 		msg.msg_name = NULL;
@@ -231,16 +303,21 @@ int route_thread(void *data) {
 					break;
 				if (nh->nlmsg_type == NLMSG_ERROR) {
 					pr_warn("IPO receive error nlmsg");
+					break;
 				}
 				rtm_to_fib_config(nh, &cfg);
+				if (cfg.fc_gw == 0)
+					continue;
 				if (nh->nlmsg_type == RTM_NEWROUTE) {
-					if (cfg.fc_gw == 0)
-						continue;
 					spin_lock_bh(&ipon->ipo_dev->hash_lock);
-					ipo_route_add(ipon->ipo_dev, cfg.fc_gw, cfg.fc_dst);
+					if ((err = ipo_route_add(ipon->ipo_dev, cfg.fc_gw, cfg.fc_dst)) != 0) {
+						pr_err("IPO failed to add route, gateway %pI4, dst %pI4, err %d\n", &cfg.fc_gw, &cfg.fc_dst, err);
+					}
 					spin_unlock_bh(&ipon->ipo_dev->hash_lock);
 				} else if (nh->nlmsg_type == RTM_DELROUTE) {
-					ipo_route_delete(ipon->ipo_dev, cfg.fc_gw);
+					if ((err = ipo_route_delete(ipon->ipo_dev, cfg.fc_gw)) != 0) {
+						pr_err("IPO failed to del route, gateway %pI4, dst %pI4, err %d\n", &cfg.fc_gw, &cfg.fc_dst, err);
+					}
 				}
 			}
 		} else {
@@ -252,12 +329,12 @@ int route_thread(void *data) {
 
 static void __net_exit ipo_exit_net(struct net *net)
 {
-	pr_debug("IPO ipo_exit_net");
+	pr_debug("IPO ipo_exit_net\n");
 }
 
 static int __net_init ipo_init_net(struct net *net)
 {
-	pr_debug("IPO ipo_init_net");
+	pr_debug("IPO ipo_init_net\n");
 	return 0;
 }
 
@@ -304,23 +381,23 @@ static inline struct rtable *ip_route_output_ipo(struct net *net, struct flowi4 
 	return ip_route_output_key(net, fl4);
 }
 
-static void ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
+static void __ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
 {
 	int i;
 
 	for_each_possible_cpu(i) {
-		const struct pcpu_sw_netstats *tstats;
+		const ipo_pcpu_tstats *tstats;
 		u64 tbytes, tpackets, rbytes, rpackets;
 		unsigned int start;
 
 		tstats = per_cpu_ptr(dev->tstats, i);
 		do {
-			start = u64_stats_fetch_begin_irq(&tstats->syncp);
+			start = ipo_u64_stats_fetch_begin(&tstats->syncp);
 			tbytes = tstats->tx_bytes;
 			tpackets = tstats->tx_packets;
 			rbytes = tstats->rx_bytes;
 			rpackets = tstats->rx_packets;
-		} while (u64_stats_fetch_retry_irq(&tstats->syncp, start));
+		} while (ipo_u64_stats_fetch_retry(&tstats->syncp, start));
 		stats->tx_bytes += tbytes;
 		stats->tx_packets += tpackets;
 		stats->rx_bytes += rbytes;
@@ -372,7 +449,7 @@ static int ipo_rx(struct sk_buff *skb)
 	int err;
 	char *pchar;
 	struct net_device *dev = skb->dev;
-	struct pcpu_sw_netstats *tstats;
+	ipo_pcpu_tstats *tstats;
 	struct net *net = dev_net(dev);
 	struct ipo_dev *ipo = ((struct ipo_net *) net_generic(net, ipo_net_id))->ipo_dev;
 	struct ipo_route *route;
@@ -425,14 +502,14 @@ static int ipo_rx(struct sk_buff *skb)
 
 	pr_debug("IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
 	pr_debug("IPO ipo_rx s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
-	err = gro_cells_receive(&ipo->gro_cells, skb);
+	err = ipo_gro_cells_receive(&ipo->gro_cells, skb);
 	if (err != 0) {
-		printk(KERN_WARNING "IPO gro_cells_receive fail\n");
+		pr_warn("IPO gro_cells_receive fail\n");
 		goto drop;
 	}
 	return 0;
 drop:
-	printk(KERN_WARNING "IPO rx_error\n");
+	pr_warn("IPO rx_error\n");
 	kfree_skb(skb);
 	return 0;
 }
@@ -452,7 +529,7 @@ static inline void iptunnel_xmit_ipo(struct sk_buff *skb, struct net_device *dev
 {
 	int err;
 	int pkt_len = skb->len - skb_transport_offset(skb);
-	struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
+	ipo_pcpu_tstats *tstats = this_cpu_ptr(dev->tstats);
 
 	nf_reset(skb);
 
@@ -480,17 +557,17 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	int mtu;
 	nh = (struct iphdr *)skb_network_header(skb);
 	if (ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP) {
-		printk(KERN_WARNING "Proto not ETH_P_IP");
+		pr_warn("Proto not ETH_P_IP");
 		goto tx_error;
 	}
 	if (unlikely(skb_headroom(skb) < overhead)) {
-		printk(KERN_WARNING "IPO headroom %d too small\n", skb_headroom(skb));
+		pr_warn("IPO headroom %d too small\n", skb_headroom(skb));
 		goto tx_error;
 	}
 	if (nh->ihl == 5) {
 		rt = skb_rtable(skb);
 		if (rt == NULL) {
-			printk(KERN_WARNING "IPO skb_rtable is null\n");
+			pr_warn("IPO skb_rtable is null\n");
 			goto tx_error;
 		}
 		pr_debug("IPO rt.dst %pI4\n", &rt->rt_gateway);
@@ -537,11 +614,11 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 									RT_TOS(nh->tos), 0);
 		if (IS_ERR(rt)) {
 			dev->stats.tx_carrier_errors++;
-			printk(KERN_INFO "IPO route lookup error\n");
+			pr_warn("IPO route lookup error\n");
 			goto tx_error;
 		}
 		if (rt->dst.dev == dev) {
-			printk(KERN_WARNING "IPO circular route to %d\n", nh->daddr);
+			pr_warn("IPO circular route to %d\n", nh->daddr);
 			ip_rt_put(rt);
 			dev->stats.collisions++;
 			goto tx_error;
@@ -570,10 +647,10 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	} else {
 		// TODO
 	}
-	pr_debug(KERN_INFO "IPO tx_ok\n");
+	pr_debug("IPO tx_ok\n");
 	return NETDEV_TX_OK;
 tx_error:
-	printk(KERN_WARNING "IPO tx_error\n");
+	pr_warn("IPO tx_error\n");
 	dev->stats.tx_errors++;
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
@@ -583,9 +660,9 @@ static int ipo_newlink(struct net *net, struct net_device *dev,
 					   struct nlattr *tb[], struct nlattr *data[])
 {
 	int err;
-	struct ipo_net *ipon = net_generic(net, ipo_net_id);
+	struct ipo_net *ipon = (struct ipo_net *) net_generic(net, ipo_net_id);
 	struct ipo_dev *ipo = netdev_priv(dev);
-	printk(KERN_INFO "IPO ipo_newlink %s", dev->name);
+	pr_debug("IPO ipo_newlink %s\n", dev->name);
 	err = register_netdevice(dev);
 	if (err) {
 		return err;
@@ -597,8 +674,8 @@ static int ipo_newlink(struct net *net, struct net_device *dev,
 static void ipo_dev_uninit(struct net_device *dev)
 {
 	struct ipo_dev *ipo = netdev_priv(dev);
-	struct ipo_net *ipon = net_generic(dev_net(dev), ipo_net_id);
-	pr_info("IPO ipo_dev_uninit %s", dev->name);
+	struct ipo_net *ipon = (struct ipo_net *) net_generic(dev_net(dev), ipo_net_id);
+	pr_debug("IPO ipo_dev_uninit %s\n", dev->name);
 	if (ipon->route_task) {
 		kthread_stop(ipon->route_task);
 		ipon->route_task = NULL;
@@ -615,16 +692,16 @@ static void ipo_dev_uninit(struct net_device *dev)
 static int ipo_dev_init(struct net_device *dev)
 {
 	struct ipo_dev *ipo = netdev_priv(dev);
-	struct ipo_net *ipon = net_generic(dev_net(dev), ipo_net_id);
+	struct ipo_net *ipon = (struct ipo_net *) net_generic(dev_net(dev), ipo_net_id);
 	int rc;
 	struct socket *sock;
 	struct sockaddr_nl nl_route_addr = {
 		.nl_family = AF_NETLINK,
 	};
-	pr_info("IPO ipo_dev_init %s", dev->name);
+	pr_debug("IPO ipo_dev_init %s\n", dev->name);
 	nl_route_addr.nl_groups |= (1 << (RTNLGRP_IPV4_ROUTE - 1));
 	ipo->dev = dev;
-	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
+	dev->tstats = ipo_alloc_pcpu_stats(ipo_pcpu_tstats);
 	if (!dev->tstats)
 		return -ENOMEM;
 	// preserve headroom for option fields.
@@ -656,14 +733,14 @@ static int ipo_dev_init(struct net_device *dev)
 	}
 	inet_sk(sock->sk)->mc_loop = 0;
 
-	ipon->route_task = kthread_create(route_thread, ipon, "ipo_route_task");
+	ipon->route_task = kthread_create(route_thread, ipon, "ipo_route");
 	if(IS_ERR(ipon->route_task)){
 		pr_err("Unable to start route kernel thread.\n");
 		rc = PTR_ERR(ipon->route_task);
 		ipon->route_task = NULL;
 		goto fail;
 	}
-	pr_info("created ipo k thread %d\n", ipon->route_task->pid);
+	pr_info("IPO created route thread %d\n", ipon->route_task->pid);
 	wake_up_process(ipon->route_task);
 	return rc;
 fail:
@@ -718,7 +795,7 @@ static void ipo_setup(struct net_device *dev)
 
 static int ipo_validate(struct nlattr *tb[], struct nlattr *data[])
 {
-	printk(KERN_INFO "IPO ipo_validate");
+	pr_debug("IPO ipo_validate\n");
 	if (tb[IFLA_ADDRESS]) {
 		if (nla_len(tb[IFLA_ADDRESS]) != ETH_ALEN)
 			return -EINVAL;
