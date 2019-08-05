@@ -197,7 +197,7 @@ static int ipo_route_delete(struct ipo_dev *ipo, __be32 gateway)
 
 static int ipo_net_id;
 
-static int recvbuf_size = 65536;
+static size_t recvbuf_size = 2000;
 
 const struct nla_policy rtm_ipv4_policy[RTA_MAX + 1] = {
 	[RTA_DST]		= { .type = NLA_U32 },
@@ -294,7 +294,7 @@ int route_thread(void *data) {
 		msg.msg_namelen = 0;
 		msg.msg_control = NULL;
 		msg.msg_controllen = 0;
-		msg.msg_flags = MSG_NOSIGNAL;
+		msg.msg_flags = MSG_DONTWAIT;
 		recvlen = kernel_recvmsg(ipon->sk->sk_socket, &msg, &iov, 1, recvbuf_size, msg.msg_flags);
 		if (recvlen > 0) {
 			for (nh = (struct nlmsghdr *) ipon->recvbuf; NLMSG_OK (nh, recvlen);
@@ -321,7 +321,7 @@ int route_thread(void *data) {
 				}
 			}
 		} else {
-			schedule_timeout(msecs_to_jiffies(1000));
+			schedule_timeout_interruptible(msecs_to_jiffies(1000));
 		}
 	}
 	return 0;
