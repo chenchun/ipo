@@ -469,6 +469,8 @@ static int ipo_rx(struct sk_buff *skb)
 		goto drop;
 	}
 	pr_debug("IPO ipo_rx find route for %pI4, dst %pI4\n", &nh->saddr, &route->dst);
+	// fix csum first, we'll change csum byte in ip header, so call csum_sub first
+	skb_postpull_rcsum(skb, skb_network_header(skb), overhead+sizeof(struct iphdr));
 	nh->saddr = route->dst;
 	// get dst ip prefix from ipo dev ip
 	for_primary_ifa(ipo->dev->ip_ptr) {
@@ -489,6 +491,8 @@ static int ipo_rx(struct sk_buff *skb)
 	ip_send_check(nh);
 	// push back IP hdr
 	skb_push(skb, sizeof(struct iphdr));
+	if (skb->ip_summed == CHECKSUM_COMPLETE)
+		skb->csum = csum_add(skb->csum, csum_partial(nh, sizeof(struct iphdr), 0));
 
 	tstats = this_cpu_ptr(ipo->dev->tstats);
 	u64_stats_update_begin(&tstats->syncp);
@@ -768,8 +772,7 @@ static const struct net_device_ops ipo_netdev_ops = {
 #define IPO_FEATURES (NETIF_F_SG |		\
 		       NETIF_F_FRAGLIST |	\
 		       NETIF_F_HIGHDMA |	\
-		       NETIF_F_HW_CSUM |	\
-			   NETIF_F_RXCSUM)
+		       NETIF_F_HW_CSUM)
 
 static void ipo_setup(struct net_device *dev)
 {
