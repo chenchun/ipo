@@ -1,9 +1,17 @@
+#!/usr/bin/env bash
+
+set -e
+
 node1=${node1-10.0.0.2}
 node2=${node2-10.0.0.3}
-rmmod ipo; make clean; make DEBUG=${DEBUG} && insmod ipo.ko
+rmmod ipo &> /dev/null || true
+make clean; make DEBUG=${DEBUG} && insmod ipo.ko
 
-ip a | grep ${node2} &> /dev/null
+set +e
+ip a | grep "inet ${node2}" &> /dev/null
 is_node1=$?
+set -e
+
 ip netns del ctn 2> /dev/null || true
 ip=192.168.1.3
 if [ $is_node1 -eq 0 ]; then
