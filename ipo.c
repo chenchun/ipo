@@ -405,40 +405,6 @@ static void __ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *
 	}
 }
 
-struct fib_table *ipo_fib_get_table(struct net *net, u32 id)
-{
-	struct fib_table *tb;
-	struct hlist_head *head;
-	unsigned int h;
-
-	if (id == 0)
-		id = RT_TABLE_MAIN;
-	h = id & (FIB_TABLE_HASHSZ - 1);
-
-	rcu_read_lock();
-	head = &net->ipv4.fib_table_hash[h];
-	hlist_for_each_entry_rcu(tb, head, tb_hlist) {
-		if (tb->tb_id == id) {
-			rcu_read_unlock();
-			return tb;
-		}
-	}
-	rcu_read_unlock();
-	return NULL;
-}
-
-static inline int fib_lookup_by_gateway(struct net *net, const struct flowi4 *flp,
-							 struct fib_result *res)
-{
-	struct fib_table *table;
-	int ret;
-	table = ipo_fib_get_table(net, RT_TABLE_MAIN);
-	ret = fib_table_lookup(table, flp, res, FIB_LOOKUP_NOREF);
-	if (!ret)
-		return 0;
-	return -ret;
-}
-
 const int IPPROTO_IPO_ADDITION = 143;
 
 // Check include/linux/netdevice.h for enum rx_handler_result
@@ -638,7 +604,6 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 
 		nh->saddr = inet_select_addr(rt->dst.dev, rt_nexthop(rt, nh->daddr), RT_SCOPE_UNIVERSE);
 		pr_debug("IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
-//		nh->saddr = rt->rt_gateway;
 		skb_dst_drop(skb);
 		skb_dst_set(skb, &rt->dst);
 		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
