@@ -31,6 +31,7 @@ ip netns exec ctn ip n add 169.254.0.1 dev v1 lladdr `cat /sys/class/net/v2/addr
 ip route add $ip dev v2
 
 ip link add ipo0 type ipo
+ip link set ipo0 mtu 1496
 if [ $is_node1 -eq 1 ]; then
     ip ad add 192.168.1.2/24 dev ipo0
     ip link set ipo0 up
