@@ -4,12 +4,20 @@ project(ipo C)
 
 add_executable("ipo" ipo.c)
 
-add_definitions(-D__KERNEL__ -DDEBUG -D__LITTLE_ENDIAN_BITFIELD -DCONFIG_SLAB)
-
 set(KERNEL_ROOT "/home/ramichen/project/c/centos/linux-3.10.0-957.12.2.el7")
 IF(NOT EXISTS ${KERNEL_ROOT})
         set(KERNEL_ROOT "/Volumes/devel/linux")
 endif(NOT EXISTS ${KERNEL_ROOT})
+
+execute_process(COMMAND grep pcpu_sw_netstats ${KERNEL_ROOT}/include/linux/netdevice.h
+        OUTPUT_VARIABLE OUT)
+if("${OUT}" STREQUAL "")
+        set(PCPU_SW_NETSTATS "NPCPU_SW_NETSTATS")
+else()
+        set(PCPU_SW_NETSTATS "PCPU_SW_NETSTATS")
+endif()
+
+add_definitions(-D__KERNEL__ -DDEBUG -D__LITTLE_ENDIAN_BITFIELD -DCONFIG_SLAB -D${PCPU_SW_NETSTATS})
 
 include_directories(
         # kernel headers
