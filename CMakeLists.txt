@@ -4,10 +4,14 @@ project(ipo C)
 
 add_executable("ipo" ipo.c)
 
-set(KERNEL_ROOT "/home/ramichen/project/c/centos/linux-3.10.0-957.12.2.el7")
-IF(NOT EXISTS ${KERNEL_ROOT})
-        set(KERNEL_ROOT "/Volumes/devel/linux")
-endif(NOT EXISTS ${KERNEL_ROOT})
+set(dirs /home/ramichen/project/c/centos/linux-3.10.0-957.12.2.el7 /Volumes/devel/linux /Users/ramichen/project/c/centos7)
+foreach(dir IN LISTS dirs)
+        if(EXISTS ${dir})
+                set(KERNEL_ROOT ${dir})
+                break()
+        endif()
+endforeach()
+message("KERNEL_ROOT=" ${KERNEL_ROOT})
 
 execute_process(COMMAND grep pcpu_sw_netstats ${KERNEL_ROOT}/include/linux/netdevice.h
         OUTPUT_VARIABLE OUT)
