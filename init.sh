@@ -30,7 +30,7 @@ ip netns exec ctn ip r add default via 169.254.0.1 dev v1 scope global
 ip netns exec ctn ip n add 169.254.0.1 dev v1 lladdr `cat /sys/class/net/v2/address`
 ip route add $ip dev v2
 
-ip link add ipo0 type ipo
+ip link add link eth1 name ipo0 type ipo
 ip link set ipo0 mtu 1496
 if [ $is_node1 -eq 1 ]; then
     ip ad add 192.168.1.2/24 dev ipo0
