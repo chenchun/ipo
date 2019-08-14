@@ -28,6 +28,8 @@
 
 static void __ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats);
 
+const int IPPROTO_IPO_ADDITION = 143;
+
 #ifndef PCPU_SW_NETSTATS
 typedef struct pcpu_tstats ipo_pcpu_tstats;
 #define ipo_u64_stats_fetch_begin(...) u64_stats_fetch_begin_bh(__VA_ARGS__)
@@ -445,16 +447,18 @@ static int ipo_rx(struct sk_buff *skb)
 		pr_warn("IPO ipo_rx route not found for %pI4\n", &nh->saddr);
 		goto drop;
 	}
+//	printiphdr("IPO ipo_rx origin: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 //	pr_debug("IPO ipo_rx find route for %pI4, dst %pI4\n", &nh->saddr, &route->dst);
 	nh->saddr = route->dst;
 	// get dst ip prefix from ipo dev ip
 	if (likely(ipo->dev->ip_ptr->ifa_list != NULL)) {
 		nh->daddr = ipo->dev->ip_ptr->ifa_list->ifa_local;
 	}
-	nh->saddr &= 0xffe0;
-	nh->daddr &= 0xffe0;
-	decode(((uint8_t *)&nh->saddr) + 8, ((uint8_t *)&nh->daddr) + 8, &nh->id);
+	nh->saddr &= 0xffffffe0;
+	nh->daddr &= 0xffffffe0;
+	decode(((uint8_t *)&nh->saddr) + 3, ((uint8_t *)&nh->daddr) + 3, &nh->id);
 
+	nh->protocol -= IPPROTO_IPO_ADDITION;
 	ip_send_check(nh);
 
 	//TODO fix checksum for tcp/udp
@@ -543,7 +547,8 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 #endif
 		skb_pull(skb, sizeof(struct ethhdr));
 	}
-		printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
+	nh->protocol += IPPROTO_IPO_ADDITION;
+//	printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
 	// save last byte of src ip to opt src
 	encode(*((uint8_t *)&nh->saddr + 3), *((uint8_t *)&nh->daddr + 3), &nh->id);
 	nh->daddr = dst;
@@ -581,7 +586,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 //		pr_debug("IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
 	skb_dst_drop(skb);
 	skb_dst_set(skb, &rt->dst);
-		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
+//	printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
 //		pr_debug("IPO ipo_xmit head %p, tail %d, data %p, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d, skb->protocol %d\n", skb->head, skb->tail, skb->data, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len), skb->protocol);
 //		if (skb_is_gso(skb)) {
 //			pr_info("is gso\n");
@@ -599,10 +604,13 @@ tx_error:
 static rx_handler_result_t ipo_handle_frame(struct sk_buff **pskb)
 {
 	struct sk_buff *skb = *pskb;
+	struct iphdr *nh = (struct iphdr *)skb_network_header(skb);
 	if (unlikely(ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP)) {
 		return RX_HANDLER_PASS;
 	}
-	// TODO how do we know this packet is from us ?
+	if (nh->protocol < IPPROTO_IPO_ADDITION) {
+		return RX_HANDLER_PASS;
+	}
 	ipo_rx(skb);
 	return RX_HANDLER_CONSUMED;
 }
@@ -767,11 +775,11 @@ static const struct net_device_ops ipo_netdev_ops = {
 	.ndo_change_carrier	= ipo_change_carrier,
 };
 
+//NETIF_F_GSO_SOFTWARE |
 #define IPO_FEATURES (NETIF_F_SG |		\
 		       NETIF_F_FRAGLIST |	\
 		       NETIF_F_HIGHDMA |	\
 		       NETIF_F_HW_CSUM |	\
-			   NETIF_F_GSO_SOFTWARE |	\
 			   NETIF_F_RXCSUM)
 
 static struct device_type ipo_type = {
