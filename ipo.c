@@ -157,6 +157,7 @@ static int ipo_route_add(struct ipo_dev *ipo, const __be32 gateway, __be32 dst)
 	struct ipo_route *f;
 	f = ipo_find_route(ipo, gateway);
 	if (f) {
+		pr_warn("IPO route gateway %pI4, dst %pI4 exist, new dst %pI4\n", &f->gateway, &f->dst, &dst);
 		return -EEXIST;
 	}
 	f = kmalloc(sizeof(*f), GFP_ATOMIC);
@@ -308,6 +309,9 @@ int route_thread(void *data) {
 				}
 				rtm_to_fib_config(nh, &cfg);
 				if (cfg.fc_gw == 0)
+					continue;
+				// continue if dst device of the route is not us
+				if (cfg.fc_oif != ipon->ipo_dev->dev->ifindex)
 					continue;
 				if (nh->nlmsg_type == RTM_NEWROUTE) {
 					spin_lock_bh(&ipon->ipo_dev->hash_lock);
