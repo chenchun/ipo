@@ -599,6 +599,10 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		skb_dst_set(skb, &rt->dst);
 //		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
 //		pr_debug("IPO ipo_xmit head %p, tail %d, data %p, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d, skb->protocol %d\n", skb->head, skb->tail, skb->data, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len), skb->protocol);
+//		if (skb_is_gso(skb)) {
+//			pr_info("is gso\n");
+//		}
+
 		iptunnel_xmit_ipo(skb, dev);
 	} else {
 		// TODO
@@ -786,10 +790,11 @@ static const struct net_device_ops ipo_netdev_ops = {
 	.ndo_change_carrier	= ipo_change_carrier,
 };
 
-//		       NETIF_F_FRAGLIST |
-//		       NETIF_F_HIGHDMA |
 #define IPO_FEATURES (NETIF_F_SG |		\
+		       NETIF_F_FRAGLIST |	\
+		       NETIF_F_HIGHDMA |	\
 		       NETIF_F_HW_CSUM |	\
+			   NETIF_F_GSO_SOFTWARE |	\
 			   NETIF_F_RXCSUM)
 
 static struct device_type ipo_type = {
