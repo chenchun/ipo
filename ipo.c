@@ -398,13 +398,34 @@ static void __ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *
 	}
 }
 
+void encode(uint8_t a, uint8_t b, uint16_t *id) {
+	uint16_t seq = *id % 64; //max 2^6=64
+	uint8_t *p = (uint8_t *) id;
+	*id = 0;
+	*p |= a << 3;
+	// clear the first 3 bits of b and store the next 3 bits in high byte of id
+	*p |= (b & 0x3c) >> 2;
+	p++;
+	// clear the first 6 bits of b and store the last 2 bits in high bit of low byte of id
+	*p |= (b & 0x03) << 6;
+	*p |= seq;
+}
+
+void decode(uint8_t *a, uint8_t *b, uint16_t *id) {
+	uint8_t *p = (uint8_t *) id;
+	*a = 0; *b = 0;
+	*a |= *p >> 3;
+	*b |= (*p & 0x07) << 2;
+	p++;
+	*b |= *p >> 6;
+	*id = *p & 0x3f;
+}
+
 // Check include/linux/netdevice.h for enum rx_handler_result
 static int ipo_rx(struct sk_buff *skb)
 {
 	struct iphdr *nh;
-	struct optdata *optdata;
 	int err;
-	char *pchar;
 	struct net_device *dev = skb->dev;
 	ipo_pcpu_tstats *tstats;
 	struct net *net = dev_net(dev);
@@ -419,7 +440,6 @@ static int ipo_rx(struct sk_buff *skb)
 //		   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 //	pr_debug("IPO ipo_rx dev %s saddr %pI4, daddr %pI4, skb->protocol %d, skb->pkt_type %d, nh->protocol %d, tos %d, ip_summed %d, nh->version %d, ntohs(nh->tot_len)=%d, nh->ihl*4=%d, nh->ttl=%d\n", dev->name, &nh->saddr, &nh->daddr, skb->protocol, skb->pkt_type, nh->protocol, nh->tos, skb->ip_summed, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
 	// search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
-	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
 	route = ipo_find_route(ipo, nh->saddr);
 	if (unlikely(route == NULL)) {
 		pr_warn("IPO ipo_rx route not found for %pI4\n", &nh->saddr);
@@ -431,19 +451,12 @@ static int ipo_rx(struct sk_buff *skb)
 	if (likely(ipo->dev->ip_ptr->ifa_list != NULL)) {
 		nh->daddr = ipo->dev->ip_ptr->ifa_list->ifa_local;
 	}
-	pchar = (char*)&nh->saddr;
-	pchar[3] = optdata->src;
-	pchar[7] = optdata->dst;
+	nh->saddr &= 0xffe0;
+	nh->daddr &= 0xffe0;
+	decode(((uint8_t *)&nh->saddr) + 8, ((uint8_t *)&nh->daddr) + 8, &nh->id);
 
-	// move IP header behind
-	memmove(skb_network_header(skb) + overhead, skb_network_header(skb), sizeof(struct iphdr));
-	skb_set_network_header(skb, skb_network_offset(skb)+overhead);
-	nh = (struct iphdr *)skb_network_header(skb);
-	nh->ihl -= overhead/4;
-	nh->tot_len = htons(ntohs(nh->tot_len) - overhead);
 	ip_send_check(nh);
 
-	skb_pull(skb, overhead);
 	//TODO fix checksum for tcp/udp
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
 
@@ -499,9 +512,6 @@ static inline void iptunnel_xmit_ipo(struct sk_buff *skb, struct net_device *dev
 static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct iphdr *nh;
-	char *charp;
-	struct opthdr *opthdr;
-	struct optdata *optdata;
 	struct flowi4 fl4;
 	struct rtable *rt;
 	__be32 dst;
@@ -511,18 +521,13 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		pr_warn("Proto not ETH_P_IP");
 		goto tx_error;
 	}
-	if (unlikely(skb_headroom(skb) < overhead)) {
-		pr_warn("IPO headroom %d too small\n", skb_headroom(skb));
+	rt = skb_rtable(skb);
+	if (unlikely(rt == NULL)) {
+		pr_warn("IPO skb_rtable is null\n");
 		goto tx_error;
 	}
-	if (likely(nh->ihl == 5)) {
-		rt = skb_rtable(skb);
-		if (unlikely(rt == NULL)) {
-			pr_warn("IPO skb_rtable is null\n");
-			goto tx_error;
-		}
 //		pr_debug("IPO rt.dst %pI4\n", &rt->rt_gateway);
-		dst = rt->rt_gateway;
+	dst = rt->rt_gateway;
 //		printiphdr("IPO ipo_xmit original: ", skb_network_header(skb), ntohs(nh->tot_len));
 //		pr_debug("IPO ipo_xmit head %p, tail %d, "
 //			   "data %p, end %d, len %u, headroom %d, "
@@ -530,40 +535,35 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 //			   skb->head, skb->tail,
 //			   skb->data, skb->end, skb->len, skb_headroom(skb),
 //			   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
-		if (skb_mac_header_was_set(skb)) {
+	if (skb_mac_header_was_set(skb)) {
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
-			skb->mac_header = ~0;
+		skb->mac_header = ~0;
 #else
-			skb->mac_header = NULL;
+		skb->mac_header = NULL;
 #endif
-			skb_pull(skb, sizeof(struct ethhdr));
-		}
-		charp = skb_network_header(skb);
-		opthdr = (struct opthdr *)(charp + sizeof(struct iphdr));
-		optdata = (struct optdata *)((char *)opthdr + sizeof(struct opthdr));
-//		printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
-		// save last byte of src ip to opt src
-		optdata->src = charp[15];
-		optdata->dst = charp[19];
-//		nh->id = charp[15];
-		nh->daddr = dst;
-		//TODO checksum ?
-		rt = ip_route_output_ipo(dev_net(dev), &fl4,
-									nh->protocol,
-									nh->daddr, 0,
-									TUNNEL_NO_KEY,
-									RT_TOS(nh->tos), 0);
-		if (IS_ERR(rt)) {
-			dev->stats.tx_carrier_errors++;
-			pr_warn("IPO route lookup error\n");
-			goto tx_error;
-		}
-		if (rt->dst.dev == dev) {
-			pr_warn("IPO circular route to %d\n", nh->daddr);
-			ip_rt_put(rt);
-			dev->stats.collisions++;
-			goto tx_error;
-		}
+		skb_pull(skb, sizeof(struct ethhdr));
+	}
+		printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
+	// save last byte of src ip to opt src
+	encode(*((uint8_t *)&nh->saddr + 3), *((uint8_t *)&nh->daddr + 3), &nh->id);
+	nh->daddr = dst;
+	//TODO checksum ?
+	rt = ip_route_output_ipo(dev_net(dev), &fl4,
+								nh->protocol,
+								nh->daddr, 0,
+								TUNNEL_NO_KEY,
+								RT_TOS(nh->tos), 0);
+	if (IS_ERR(rt)) {
+		dev->stats.tx_carrier_errors++;
+		pr_warn("IPO route lookup error\n");
+		goto tx_error;
+	}
+	if (rt->dst.dev == dev) {
+		pr_warn("IPO circular route to %d\n", nh->daddr);
+		ip_rt_put(rt);
+		dev->stats.collisions++;
+		goto tx_error;
+	}
 
 //		mtu = skb_dst(skb)? dst_mtu(skb_dst(skb)) : dev->mtu;
 //		if (skb_dst(skb))
@@ -577,20 +577,17 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 //			goto tx_error;
 //		}
 
-		nh->saddr = inet_select_addr(rt->dst.dev, rt_nexthop(rt, nh->daddr), RT_SCOPE_UNIVERSE);
+	nh->saddr = inet_select_addr(rt->dst.dev, rt_nexthop(rt, nh->daddr), RT_SCOPE_UNIVERSE);
 //		pr_debug("IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
-		skb_dst_drop(skb);
-		skb_dst_set(skb, &rt->dst);
-//		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
+	skb_dst_drop(skb);
+	skb_dst_set(skb, &rt->dst);
+		printiphdr("IPO ipo_xmit new: ", skb_network_header(skb), ntohs(nh->tot_len));
 //		pr_debug("IPO ipo_xmit head %p, tail %d, data %p, end %d, len %d, headroom %d, mac %d, network %d, transport %d, ip payload len %d, skb->protocol %d\n", skb->head, skb->tail, skb->data, skb->len, skb->end, skb_headroom(skb), skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len), skb->protocol);
 //		if (skb_is_gso(skb)) {
 //			pr_info("is gso\n");
 //		}
 
-		iptunnel_xmit_ipo(skb, dev);
-	} else {
-		// TODO
-	}
+	iptunnel_xmit_ipo(skb, dev);
 	return NETDEV_TX_OK;
 tx_error:
 //	pr_warn("IPO tx_error\n");
@@ -602,13 +599,10 @@ tx_error:
 static rx_handler_result_t ipo_handle_frame(struct sk_buff **pskb)
 {
 	struct sk_buff *skb = *pskb;
-	struct iphdr *nh = (struct iphdr *)skb_network_header(skb);
 	if (unlikely(ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP)) {
 		return RX_HANDLER_PASS;
 	}
-	if (nh->ihl < 6) {
-		return RX_HANDLER_PASS;
-	}
+	// TODO how do we know this packet is from us ?
 	ipo_rx(skb);
 	return RX_HANDLER_CONSUMED;
 }
@@ -715,7 +709,6 @@ static int ipo_dev_init(struct net_device *dev)
 		return -ENOMEM;
 	// preserve headroom for option fields.
 	// It seems needed_headroom multiples by 4
-	dev->needed_headroom = overhead;
 	rc = gro_cells_init(&ipo->gro_cells, dev);
 	if (rc) {
 		goto fail;
@@ -843,7 +836,7 @@ static int __init ipo_init_module(void)
 	if (err < 0) {
 		unregister_pernet_device(&ipo_net_ops);
 	}
-	printk(KERN_INFO "IPO installed overhead %d\n", overhead);
+	printk(KERN_INFO "IPO installed\n");
 	return err;
 }
 
