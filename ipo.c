@@ -97,17 +97,6 @@ static void ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *st
 }
 #endif
 
-// ip option header
-struct opthdr {
-	uint8_t type;
-	uint8_t len;
-};
-
-struct optdata {
-	char src;
-	char dst;
-};
-
 #define ROUTE_HASH_BITS	12
 #define ROUTE_HASH_SIZE	(1<<ROUTE_HASH_BITS)
 
@@ -350,7 +339,6 @@ static struct pernet_operations ipo_net_ops = {
 	.size = sizeof(struct ipo_net),
 };
 
-const unsigned short overhead = sizeof(struct opthdr) + sizeof(struct optdata);
 
 #if defined(DEBUG)
 void printiphdr(const char *pre, char *p, uint32_t len) {
@@ -550,22 +538,14 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 #endif
 			skb_pull(skb, sizeof(struct ethhdr));
 		}
-		memcpy(skb_network_header(skb) - overhead, skb_network_header(skb), sizeof(struct iphdr));
-		skb_set_network_header(skb, skb_network_offset(skb)-overhead);
-		skb_push(skb, overhead);
-		// copy ip headers ahead
-		nh = (struct iphdr *)skb_network_header(skb);
-		nh->ihl += overhead/4;
-		nh->tot_len = htons(ntohs(nh->tot_len) + overhead);
 		charp = skb_network_header(skb);
 		opthdr = (struct opthdr *)(charp + sizeof(struct iphdr));
-		opthdr->type = 40;
-		opthdr->len = overhead;
 		optdata = (struct optdata *)((char *)opthdr + sizeof(struct opthdr));
 //		printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
 		// save last byte of src ip to opt src
 		optdata->src = charp[15];
 		optdata->dst = charp[19];
+//		nh->id = charp[15];
 		nh->daddr = dst;
 		//TODO checksum ?
 		rt = ip_route_output_ipo(dev_net(dev), &fl4,
