@@ -28,8 +28,6 @@
 
 static void __ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats);
 
-const int IPPROTO_IPO_ADDITION = 143;
-
 #ifndef PCPU_SW_NETSTATS
 typedef struct pcpu_tstats ipo_pcpu_tstats;
 #define ipo_u64_stats_fetch_begin(...) u64_stats_fetch_begin_bh(__VA_ARGS__)
@@ -449,7 +447,6 @@ static int ipo_rx(struct sk_buff *skb)
 	nh->daddr &= 0xffffffe0;
 	decode(((uint8_t *)&nh->saddr) + 3, ((uint8_t *)&nh->daddr) + 3, &nh->id);
 
-	nh->protocol -= IPPROTO_IPO_ADDITION;
 	ip_send_check(nh);
 
 	//TODO fix checksum for tcp/udp
@@ -538,7 +535,6 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 #endif
 		skb_pull(skb, sizeof(struct ethhdr));
 	}
-	nh->protocol += IPPROTO_IPO_ADDITION;
 //	printiphdr("IPO ipo_xmit int: ", skb_network_header(skb), ntohs(nh->tot_len));
 	// save last byte of src ip to opt src
 	encode(*((uint8_t *)&nh->saddr + 3), *((uint8_t *)&nh->daddr + 3), &nh->id);
@@ -574,6 +570,8 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 //		}
 
 	nh->saddr = inet_select_addr(rt->dst.dev, rt_nexthop(rt, nh->daddr), RT_SCOPE_UNIVERSE);
+	nh->ttl |= 0x80; // nh->ttl > 128
+	nh->tos = 0xb0; // 101 1000 0(Critic - minimize delay)
 //		pr_debug("IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
 	skb_dst_drop(skb);
 	skb_dst_set(skb, &rt->dst);
@@ -599,7 +597,8 @@ static rx_handler_result_t ipo_handle_frame(struct sk_buff **pskb)
 	if (unlikely(ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP)) {
 		return RX_HANDLER_PASS;
 	}
-	if (nh->protocol < IPPROTO_IPO_ADDITION) {
+	if (!(nh->ttl & 0x80 && nh->tos == 0xb0)) {
+		//0000 0000
 		return RX_HANDLER_PASS;
 	}
 	ipo_rx(skb);
@@ -766,10 +765,10 @@ static const struct net_device_ops ipo_netdev_ops = {
 	.ndo_change_carrier	= ipo_change_carrier,
 };
 
-//NETIF_F_GSO_SOFTWARE |
 #define IPO_FEATURES (NETIF_F_SG |		\
 		       NETIF_F_FRAGLIST |	\
 		       NETIF_F_HIGHDMA |	\
+		       NETIF_F_GSO_SOFTWARE |	\
 		       NETIF_F_HW_CSUM |	\
 			   NETIF_F_RXCSUM)
 
