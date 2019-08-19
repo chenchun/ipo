@@ -448,9 +448,6 @@ static int ipo_rx(struct sk_buff *skb)
 
 	ip_send_check(nh);
 
-	//TODO fix checksum for tcp/udp
-	skb->ip_summed = CHECKSUM_UNNECESSARY;
-
 	tstats = this_cpu_ptr(ipo->dev->tstats);
 	u64_stats_update_begin(&tstats->syncp);
 	tstats->rx_packets++;
