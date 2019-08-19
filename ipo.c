@@ -433,8 +433,7 @@ static int ipo_rx(struct sk_buff *skb)
 	// search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
 	route = ipo_find_route(ipo, nh->saddr);
 	if (unlikely(route == NULL)) {
-		pr_warn("IPO ipo_rx route not found for %pI4\n", &nh->saddr);
-		goto drop;
+		goto pass;
 	}
 //	printiphdr("IPO ipo_rx origin: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 //	pr_debug("IPO ipo_rx find route for %pI4, dst %pI4\n", &nh->saddr, &route->dst);
@@ -475,6 +474,8 @@ static int ipo_rx(struct sk_buff *skb)
 		goto drop;
 	}
 	return 0;
+pass:
+	return RX_HANDLER_PASS;
 drop:
 	pr_warn("IPO rx_error\n");
 	kfree_skb(skb);
@@ -571,7 +572,6 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	nh->saddr = inet_select_addr(rt->dst.dev, rt_nexthop(rt, nh->daddr), RT_SCOPE_UNIVERSE);
 	nh->ttl |= 0x80; // nh->ttl > 128
-	nh->tos = 0xb0; // 101 1000 0(Critic - minimize delay)
 //		pr_debug("IPO rt.rt_gateway %pI4 dev %s, saddr %pI4\n", &rt->rt_gateway, rt->dst.dev->name, &nh->saddr);
 	skb_dst_drop(skb);
 	skb_dst_set(skb, &rt->dst);
@@ -594,14 +594,17 @@ static rx_handler_result_t ipo_handle_frame(struct sk_buff **pskb)
 {
 	struct sk_buff *skb = *pskb;
 	struct iphdr *nh = (struct iphdr *)skb_network_header(skb);
+	int ret = 0;
 	if (unlikely(ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP)) {
 		return RX_HANDLER_PASS;
 	}
-	if (!(nh->ttl & 0x80 && nh->tos == 0xb0)) {
-		//0000 0000
+	if (!(nh->ttl & 0x80)) {
 		return RX_HANDLER_PASS;
 	}
-	ipo_rx(skb);
+	ret = ipo_rx(skb);
+	if (ret == RX_HANDLER_PASS) {
+		return RX_HANDLER_PASS;
+	}
 	return RX_HANDLER_CONSUMED;
 }
 
