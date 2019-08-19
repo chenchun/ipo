@@ -768,7 +768,6 @@ static const struct net_device_ops ipo_netdev_ops = {
 #define IPO_FEATURES (NETIF_F_SG |		\
 		       NETIF_F_FRAGLIST |	\
 		       NETIF_F_HIGHDMA |	\
-		       NETIF_F_GSO_SOFTWARE |	\
 		       NETIF_F_HW_CSUM |	\
 			   NETIF_F_RXCSUM)
 
