@@ -13,6 +13,7 @@ is_node1=$?
 set -e
 
 ip netns del ctn 2> /dev/null || true
+ip l del v2 2> /dev/null || true
 ip=192.168.1.3
 if [ $is_node1 -eq 0 ]; then
     ip=192.168.2.3
@@ -21,8 +22,8 @@ ip netns add ctn
 ip link add v1 type veth peer name v2
 tc qdisc replace dev v2 root pfifo limit 100; ifconfig v2 txqueuelen 0; tc qdisc del dev v2 root;
 tc qdisc replace dev v1 root pfifo limit 100; ifconfig v1 txqueuelen 0; tc qdisc del dev v1 root;
-ip link set v1 mtu 1500
-ip link set v2 mtu 1500
+ip link set v1 mtu 1496
+ip link set v2 mtu 1496
 ip link set v2 up
 ip link set v1 netns ctn
 ip netns exec ctn ip add add $ip/32 dev v1
@@ -34,7 +35,7 @@ ip netns exec ctn ip n add 169.254.0.1 dev v1 lladdr `cat /sys/class/net/v2/addr
 ip route add $ip dev v2
 
 ip link add link eth1 name ipo0 type ipo
-ip link set ipo0 mtu 1500
+ip link set ipo0 mtu 1496
 if [ $is_node1 -eq 1 ]; then
     ip ad add 192.168.1.2/24 dev ipo0
     ip link set ipo0 up
