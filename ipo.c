@@ -399,17 +399,26 @@ static void __ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *
 }
 
 void encode(uint8_t a, uint8_t b, uint16_t *id) {
+	uint16_t seq = *id % 64; //max 2^6=64
 	uint8_t *p = (uint8_t *) id;
-	*p = a;
+	*id = 0;
+	*p |= a << 3;
+	// clear the first 3 bits of b and store the next 3 bits in high byte of id
+	*p |= (b & 0x3c) >> 2;
 	p++;
-	*p = b;
+	// clear the first 6 bits of b and store the last 2 bits in high bit of low byte of id
+	*p |= (b & 0x03) << 6;
+	*p |= seq;
 }
 
 void decode(uint8_t *a, uint8_t *b, uint16_t *id) {
 	uint8_t *p = (uint8_t *) id;
-	*a = *p;
+	*a = 0; *b = 0;
+	*a |= *p >> 3;
+	*b |= (*p & 0x07) << 2;
 	p++;
-	*b = *p;
+	*b |= *p >> 6;
+	*id = *p & 0x3f;
 }
 
 // Check include/linux/netdevice.h for enum rx_handler_result
