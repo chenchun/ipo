@@ -276,7 +276,7 @@ yum install -y kernel-devel net-tools
 
 DEBUG=1 ./init.sh
 DEBUG=0 ./init.sh
-tcpdump -vvnneSs 0 -i any "ip[20]==40" or icmp
+tcpdump -vvnneSs 0 -i any "ip[9]==144" or icmp
 
 sysctl -w net.ipv4.conf.all.rp_filter=0
 sysctl -w net.ipv4.conf.default.rp_filter=0
