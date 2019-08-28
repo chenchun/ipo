@@ -434,17 +434,16 @@ static int ipo_rx(struct sk_buff *skb)
 	// search source ip prefix from route such as 192.168.1.0/24 via 10.0.0.2 dev ipo0 onlink
 	optdata = (struct optdata *)(skb_network_header(skb) + sizeof(struct iphdr) + sizeof(struct opthdr));
 	route = ipo_find_route(ipo, nh->saddr);
-	if (route == NULL) {
+	if (unlikely(route == NULL)) {
 		pr_warn("IPO ipo_rx route not found for %pI4\n", &nh->saddr);
 		goto drop;
 	}
 //	pr_debug("IPO ipo_rx find route for %pI4, dst %pI4\n", &nh->saddr, &route->dst);
 	nh->saddr = route->dst;
 	// get dst ip prefix from ipo dev ip
-	for_primary_ifa(ipo->dev->ip_ptr) {
-		nh->daddr = ifa->ifa_local;
-		break;
-	} endfor_ifa(ipo->dev);
+	if (likely(ipo->dev->ip_ptr->ifa_list != NULL)) {
+		nh->daddr = ipo->dev->ip_ptr->ifa_list->ifa_local;
+	}
 	pchar = (char*)&nh->saddr;
 	pchar[3] = optdata->src;
 	pchar[7] = optdata->dst;
@@ -476,7 +475,7 @@ static int ipo_rx(struct sk_buff *skb)
 //	pr_debug("IPO ipo_rx gro_cells_receive skb->protocol %d\n", skb->protocol);
 //	pr_debug("IPO ipo_rx s %pI4, d %pI4, proto %d, ver %d, tl %d, ihl*4 %d, ttl=%d\n", &nh->saddr, &nh->daddr, nh->protocol, nh->version, ntohs(nh->tot_len), nh->ihl*4, nh->ttl);
 	err = ipo_gro_cells_receive(&ipo->gro_cells, skb);
-	if (err != 0) {
+	if (unlikely(err != 0)) {
 		pr_warn("IPO gro_cells_receive fail\n");
 		goto drop;
 	}
@@ -529,7 +528,7 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 	__be32 dst;
 //	int mtu;
 	nh = (struct iphdr *)skb_network_header(skb);
-	if (ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP) {
+	if (unlikely(ntohs(eth_hdr(skb)->h_proto) != ETH_P_IP)) {
 		pr_warn("Proto not ETH_P_IP");
 		goto tx_error;
 	}
@@ -537,9 +536,9 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		pr_warn("IPO headroom %d too small\n", skb_headroom(skb));
 		goto tx_error;
 	}
-	if (nh->ihl == 5) {
+	if (likely(nh->ihl == 5)) {
 		rt = skb_rtable(skb);
-		if (rt == NULL) {
+		if (unlikely(rt == NULL)) {
 			pr_warn("IPO skb_rtable is null\n");
 			goto tx_error;
 		}
@@ -758,7 +757,6 @@ static void ipo_setup(struct net_device *dev)
 	ether_setup(dev);
 	dev->netdev_ops		= &ipo_netdev_ops;
 
-//	dev->type		= ARPHRD_TUNNEL;
 	SET_NETDEV_DEVTYPE(dev, &ipo_type);
 	dev->flags		= IFF_NOARP;
 	dev->iflink		= 0;
@@ -778,7 +776,6 @@ static void ipo_setup(struct net_device *dev)
 
 static int ipo_validate(struct nlattr *tb[], struct nlattr *data[])
 {
-	pr_debug("IPO ipo_validate\n");
 	if (tb[IFLA_ADDRESS]) {
 		if (nla_len(tb[IFLA_ADDRESS]) != ETH_ALEN)
 			return -EINVAL;
