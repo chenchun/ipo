@@ -272,7 +272,7 @@ ip link set ipip0 up
 ip add add 192.168.200.2 brd 255.255.255.255 peer 192.168.200.1 dev ipip0
 ip ro add 192.168.200.0/24 via 192.168.200.2
 
-yum install -y kernel-devel net-tools
+yum install -y kernel-devel net-tools gcc vim tcpdump
 
 DEBUG=1 ./init.sh
 DEBUG=0 ./init.sh
