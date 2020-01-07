@@ -418,8 +418,6 @@ void update_csum(struct sk_buff *skb) {
 	// https://stackoverflow.com/questions/45986312/recalculating-tcp-checksum-in-linux-kernel-module
 	struct iphdr *ip_header;
 	ip_header = ip_hdr(skb);
-	ip_header->check = 0;
-	ip_header->check = ip_fast_csum((u8 *) ip_header, ip_header->ihl);
 
 	if ((ip_header->protocol == IPPROTO_TCP) || (ip_header->protocol == IPPROTO_UDP)) {
 		if (skb_is_nonlinear(skb))
@@ -506,7 +504,8 @@ static int ipo_rx(struct sk_buff *skb)
 	skb_push(skb, sizeof(struct iphdr));
 	// skb_reset_network_header resets skb->network = skb->data which moves network ahead overhead bytes
 	skb_reset_network_header(skb);
-	update_csum(skb);
+	nh = (struct iphdr *)skb_network_header(skb);
+	ip_send_check(nh);
 
 	tstats = this_cpu_ptr(ipo->dev->tstats);
 	u64_stats_update_begin(&tstats->syncp);
@@ -592,6 +591,8 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		pr_warn("IPO skb_rtable is null\n");
 		goto tx_error;
 	}
+	update_csum(skb);
+	skb->ip_summed = CHECKSUM_NONE;
 //		pr_debug("IPO rt.dst %pI4\n", &rt->rt_gateway);
 	dst = rt->rt_gateway;
 //	printiphdr("IPO ipo_xmit original: ", skb_network_header(skb), ntohs(nh->tot_len));
