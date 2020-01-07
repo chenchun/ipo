@@ -448,15 +448,20 @@ static int ipo_rx(struct sk_buff *skb)
 	*(((uint8_t *)&nh->saddr) + 3) = opthdr->src;
 	*(((uint8_t *)&nh->daddr) + 3) = opthdr->dst;
 	nh->protocol = opthdr->proto;
+	nh->tot_len = htons(ntohs(nh->tot_len) - overhead);
 
 	// move IP header behind
 	memmove(skb_network_header(skb) + overhead, skb_network_header(skb), sizeof(struct iphdr));
-	skb_set_network_header(skb, skb_network_offset(skb)+overhead);
+	// skb_pull moves skb->data ahead
+	skb_pull(skb, overhead);
+	// skb_reset_transport_header resets skb->transport = skb->data which moves transport ahead overhead bytes
+	skb_reset_transport_header(skb);
+	// skb_push moves skb->data back a iphdr length, so we can put the packet into ip stack via netif_rx
+	skb_push(skb, sizeof(struct iphdr));
+	// skb_reset_network_header resets skb->network = skb->data which moves network ahead overhead bytes
+	skb_reset_network_header(skb);
 	nh = (struct iphdr *)skb_network_header(skb);
-	nh->tot_len = htons(ntohs(nh->tot_len) - overhead);
 	ip_send_check(nh);
-	// push back IP hdr, important, push back ip header and pull ipo header so that data pointer is correct
-	skb_push(skb, sizeof(struct iphdr)-overhead);
 
 	//TODO fix checksum for tcp/udp
 //	skb->ip_summed = CHECKSUM_UNNECESSARY;

@@ -4,7 +4,7 @@ project(ipo C)
 
 add_executable("ipo" ipo.c)
 
-set(dirs /home/ramichen/project/c/centos/linux-3.10.0-957.12.2.el7 /Volumes/devel/linux /Users/ramichen/project/c/centos7)
+set(dirs /home/ramichen/project/c/centos/linux-3.10.0-957.12.2.el7 /Volumes/devel/linux /Users/ramichen/project/c/centos7 /home/ramichen/project/c/linux)
 foreach(dir IN LISTS dirs)
         if(EXISTS ${dir})
                 set(KERNEL_ROOT ${dir})
