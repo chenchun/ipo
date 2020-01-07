@@ -433,7 +433,7 @@ void update_csum(struct sk_buff *skb) {
 			tcpHdr->check = tcp_v4_check(tcplen, ip_header->saddr, ip_header->daddr,
 										 csum_partial((char *) tcpHdr, tcplen, 0));
 
-			pr_debug("TCP Len :%d, Computed TCP Checksum :%x : Network : %x\n",tcplen,tcpHdr->check,htons(tcpHdr->check));
+//			pr_debug("TCP Len :%d, Computed TCP Checksum :%x : Network : %x\n",tcplen,tcpHdr->check,htons(tcpHdr->check));
 
 		} else if (ip_header->protocol == IPPROTO_UDP) {
 			struct udphdr *udpHdr;
@@ -446,7 +446,7 @@ void update_csum(struct sk_buff *skb) {
 			udpHdr->check = udp_v4_check(udplen, ip_header->saddr, ip_header->daddr,
 										 csum_partial((char *) udpHdr, udplen, 0));;
 
-			pr_debug("UDP Len :%d, Computed UDP Checksum :%x : Network : %x\n",udplen,udpHdr->check,htons(udpHdr->check));
+//			pr_debug("UDP Len :%d, Computed UDP Checksum :%x : Network : %x\n",udplen,udpHdr->check,htons(udpHdr->check));
 		}
 
 	}
