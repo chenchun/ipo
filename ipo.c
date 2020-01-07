@@ -22,7 +22,6 @@
 #include <net/ip_fib.h>
 #include <net/ip.h>
 #include <net/tcp.h>
-#include <net/udp.h>
 #include <net/gro_cells.h>
 #include <net/netns/generic.h>
 
@@ -409,6 +408,11 @@ static void __ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *
 }
 
 const int IPPROTO_IPO = 143;
+
+static inline __sum16 udp_v4_check(int len, __be32 saddr, __be32 daddr, __wsum base)
+{
+	return csum_tcpudp_magic(saddr, daddr, len, IPPROTO_UDP, base);
+}
 
 void update_csum(struct sk_buff *skb) {
 	// https://stackoverflow.com/questions/45986312/recalculating-tcp-checksum-in-linux-kernel-module
