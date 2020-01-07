@@ -21,6 +21,8 @@
 #include <net/protocol.h>
 #include <net/ip_fib.h>
 #include <net/ip.h>
+#include <net/tcp.h>
+#include <net/udp.h>
 #include <net/gro_cells.h>
 #include <net/netns/generic.h>
 
@@ -408,6 +410,46 @@ static void __ipo_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *
 
 const int IPPROTO_IPO = 143;
 
+void update_csum(struct sk_buff *skb) {
+	// https://stackoverflow.com/questions/45986312/recalculating-tcp-checksum-in-linux-kernel-module
+	struct iphdr *ip_header;
+	ip_header = ip_hdr(skb);
+	ip_header->check = 0;
+	ip_header->check = ip_fast_csum((u8 *) ip_header, ip_header->ihl);
+
+	if ((ip_header->protocol == IPPROTO_TCP) || (ip_header->protocol == IPPROTO_UDP)) {
+		if (skb_is_nonlinear(skb))
+			skb_linearize(skb);
+		if (ip_header->protocol == IPPROTO_TCP) {
+			struct tcphdr *tcpHdr;
+			unsigned int tcplen;
+
+			tcpHdr = tcp_hdr(skb);
+			skb->csum = 0;
+			tcplen = ntohs(ip_header->tot_len) - ip_header->ihl * 4;
+			tcpHdr->check = 0;
+			tcpHdr->check = tcp_v4_check(tcplen, ip_header->saddr, ip_header->daddr,
+										 csum_partial((char *) tcpHdr, tcplen, 0));
+
+			pr_debug("TCP Len :%d, Computed TCP Checksum :%x : Network : %x\n",tcplen,tcpHdr->check,htons(tcpHdr->check));
+
+		} else if (ip_header->protocol == IPPROTO_UDP) {
+			struct udphdr *udpHdr;
+			unsigned int udplen;
+
+			udpHdr = udp_hdr(skb);
+			skb->csum = 0;
+			udplen = ntohs(ip_header->tot_len) - ip_header->ihl * 4;
+			udpHdr->check = 0;
+			udpHdr->check = udp_v4_check(udplen, ip_header->saddr, ip_header->daddr,
+										 csum_partial((char *) udpHdr, udplen, 0));;
+
+			pr_debug("UDP Len :%d, Computed UDP Checksum :%x : Network : %x\n",udplen,udpHdr->check,htons(udpHdr->check));
+		}
+
+	}
+}
+
 // Check include/linux/netdevice.h for enum rx_handler_result
 static int ipo_rx(struct sk_buff *skb)
 {
@@ -460,11 +502,7 @@ static int ipo_rx(struct sk_buff *skb)
 	skb_push(skb, sizeof(struct iphdr));
 	// skb_reset_network_header resets skb->network = skb->data which moves network ahead overhead bytes
 	skb_reset_network_header(skb);
-	nh = (struct iphdr *)skb_network_header(skb);
-	ip_send_check(nh);
-
-	//TODO fix checksum for tcp/udp
-//	skb->ip_summed = CHECKSUM_UNNECESSARY;
+	update_csum(skb);
 
 	tstats = this_cpu_ptr(ipo->dev->tstats);
 	u64_stats_update_begin(&tstats->syncp);
