@@ -463,6 +463,7 @@ static int ipo_rx(struct sk_buff *skb)
 	struct net *net = dev_net(dev);
 	struct ipo_dev *ipo = ((struct ipo_net *) net_generic(net, ipo_net_id))->ipo_dev;
 	struct ipo_route *route;
+	__be32 dst_ip;
 	nh = (struct iphdr *)skb_network_header(skb);
 //	pr_debug("IPO ipo_rx head %p, tail %d, "
 //				  "data %p, end %d, len %u, headroom %d, "
@@ -488,14 +489,20 @@ static int ipo_rx(struct sk_buff *skb)
 	// get dst ip prefix from ipo dev ip
 	if (likely(ipo->dev->ip_ptr->ifa_list != NULL)) {
 		nh->daddr = ipo->dev->ip_ptr->ifa_list->ifa_local;
+//		pr_debug("IPO ipo_rx src %pI4, dst %pI4\n", &nh->saddr, &nh->daddr);
+	} else {
+		pr_warn("IPO ipo_rx ip address of ipo device not found\n");
+		goto drop;
 	}
 	*(((uint8_t *)&nh->saddr) + 3) = opthdr->src;
 	*(((uint8_t *)&nh->daddr) + 3) = opthdr->dst;
+	dst_ip = nh->daddr;
 	nh->protocol = opthdr->proto;
 	nh->tot_len = htons(ntohs(nh->tot_len) - overhead);
 
 	// move IP header behind
 	memmove(skb_network_header(skb) + overhead, skb_network_header(skb), sizeof(struct iphdr));
+//	printiphdr("IPO ipo_rx  moved: ", (char *) skb_network_header(skb), ntohs(nh->tot_len));
 	// pskb_pull moves skb->data ahead
 	pskb_pull(skb, overhead);
 	// skb_reset_transport_header resets skb->transport = skb->data which moves transport ahead overhead bytes
@@ -505,6 +512,7 @@ static int ipo_rx(struct sk_buff *skb)
 	// skb_reset_network_header resets skb->network = skb->data which moves network ahead overhead bytes
 	skb_reset_network_header(skb);
 	nh = (struct iphdr *)skb_network_header(skb);
+	nh->daddr = dst_ip;
 	ip_send_check(nh);
 
 	tstats = this_cpu_ptr(ipo->dev->tstats);
