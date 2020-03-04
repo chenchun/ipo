@@ -496,8 +496,8 @@ static int ipo_rx(struct sk_buff *skb)
 
 	// move IP header behind
 	memmove(skb_network_header(skb) + overhead, skb_network_header(skb), sizeof(struct iphdr));
-	// skb_pull moves skb->data ahead
-	skb_pull(skb, overhead);
+	// pskb_pull moves skb->data ahead
+	pskb_pull(skb, overhead);
 	// skb_reset_transport_header resets skb->transport = skb->data which moves transport ahead overhead bytes
 	skb_reset_transport_header(skb);
 	// skb_push moves skb->data back a iphdr length, so we can put the packet into ip stack via netif_rx
