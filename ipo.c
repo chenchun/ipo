@@ -417,38 +417,46 @@ static inline __sum16 udp_v4_check(int len, __be32 saddr, __be32 daddr, __wsum b
 void update_csum(struct sk_buff *skb) {
 	// https://stackoverflow.com/questions/45986312/recalculating-tcp-checksum-in-linux-kernel-module
 	struct iphdr *ip_header;
+	unsigned int csumlen;
+	pr_debug("skb->ip_summed=%d csum=%x, csum_start=%x, csum_offset=%x\n", skb->ip_summed, skb->csum, skb->csum_start, skb->csum_offset);
+	if (skb->ip_summed == CHECKSUM_NONE) {
+		return;
+	}
 	ip_header = ip_hdr(skb);
+	csumlen = ntohs(ip_header->tot_len) - ip_header->ihl * 4;
+	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+		__sum16 *check;
+		check = (__sum16 *)(skb->data + skb->csum_start + skb->csum_offset);
+		*check = 0;
+		*check = csum_tcpudp_magic(ip_header->saddr, ip_header->daddr, csumlen, ip_header->protocol, 0);
+		skb->ip_summed = CHECKSUM_NONE;
+		return;
+	}
 
 	if ((ip_header->protocol == IPPROTO_TCP) || (ip_header->protocol == IPPROTO_UDP)) {
 		if (skb_is_nonlinear(skb))
 			skb_linearize(skb);
 		if (ip_header->protocol == IPPROTO_TCP) {
 			struct tcphdr *tcpHdr;
-			unsigned int tcplen;
-
 			tcpHdr = tcp_hdr(skb);
 			skb->csum = 0;
-			tcplen = ntohs(ip_header->tot_len) - ip_header->ihl * 4;
 			tcpHdr->check = 0;
-			tcpHdr->check = tcp_v4_check(tcplen, ip_header->saddr, ip_header->daddr,
-										 csum_partial((char *) tcpHdr, tcplen, 0));
+			tcpHdr->check = tcp_v4_check(csumlen, ip_header->saddr, ip_header->daddr,
+										 csum_partial((char *) tcpHdr, csumlen, 0));
 
 //			pr_debug("TCP Len :%d, Computed TCP Checksum :%x : Network : %x\n",tcplen,tcpHdr->check,htons(tcpHdr->check));
 
 		} else if (ip_header->protocol == IPPROTO_UDP) {
 			struct udphdr *udpHdr;
-			unsigned int udplen;
 
 			udpHdr = udp_hdr(skb);
 			skb->csum = 0;
-			udplen = ntohs(ip_header->tot_len) - ip_header->ihl * 4;
 			udpHdr->check = 0;
-			udpHdr->check = udp_v4_check(udplen, ip_header->saddr, ip_header->daddr,
-										 csum_partial((char *) udpHdr, udplen, 0));;
-
+			udpHdr->check = udp_v4_check(csumlen, ip_header->saddr, ip_header->daddr,
+										 csum_partial((char *) udpHdr, csumlen, 0));
 //			pr_debug("UDP Len :%d, Computed UDP Checksum :%x : Network : %x\n",udplen,udpHdr->check,htons(udpHdr->check));
 		}
-
+		skb->ip_summed = CHECKSUM_NONE;
 	}
 }
 
@@ -600,16 +608,15 @@ static netdev_tx_t ipo_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto tx_error;
 	}
 	update_csum(skb);
-	skb->ip_summed = CHECKSUM_NONE;
 //		pr_debug("IPO rt.dst %pI4\n", &rt->rt_gateway);
 	dst = rt->rt_gateway;
-//	printiphdr("IPO ipo_xmit original: ", skb_network_header(skb), ntohs(nh->tot_len));
-//		pr_debug("IPO ipo_xmit head %p, tail %d, "
-//			   "data %p, end %d, len %u, headroom %d, "
-//			   "mac %d, network %d, transport %d, ip payload len %d\n",
-//			   skb->head, skb->tail,
-//			   skb->data, skb->end, skb->len, skb_headroom(skb),
-//			   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
+	printiphdr("IPO ipo_xmit original: ", skb_network_header(skb), ntohs(nh->tot_len));
+	pr_debug("IPO ipo_xmit head %p, tail %d, "
+		   "data %p, end %d, len %u, headroom %d, "
+		   "mac %d, network %d, transport %d, ip payload len %d\n",
+		   skb->head, skb->tail,
+		   skb->data, skb->end, skb->len, skb_headroom(skb),
+		   skb->mac_header, skb->network_header, skb->transport_header, ntohs(nh->tot_len));
 	if (skb_mac_header_was_set(skb)) {
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
 		skb->mac_header = ~0;
